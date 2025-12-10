@@ -13,6 +13,7 @@ export const STORAGE_KEYS = {
   SETTINGS: `${STORAGE_PREFIX}settings`,
   RECENT_MODELS: `${STORAGE_PREFIX}recent_models`,
   PLANNING_SESSIONS: `${STORAGE_PREFIX}planning_sessions`,
+  CONVERSATIONS: `${STORAGE_PREFIX}conversations`,
   VERSION: `${STORAGE_PREFIX}version`,
 } as const
 

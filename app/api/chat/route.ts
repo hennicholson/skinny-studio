@@ -3,11 +3,6 @@ import { generateSystemPrompt } from '@/lib/orchestrator/system-prompt'
 
 export const runtime = 'edge'
 
-interface ImageData {
-  base64: string
-  mimeType: string
-}
-
 interface ChatAttachment {
   type: 'image' | 'reference'
   url: string
@@ -35,6 +30,41 @@ interface ChatRequest {
   modelId?: string
   skillsContext?: string  // Formatted skills for system prompt
   referencedSkills?: SkillData[]  // Skills referenced in the current message
+  selectedGenerationModelId?: string  // The generation model selected by the user
+}
+
+interface GenerationBlock {
+  model: string
+  prompt: string
+  params: Record<string, any>
+}
+
+// Parse generation blocks from AI response
+function parseGenerationBlock(text: string): GenerationBlock | null {
+  const regex = /```generate\s*\n([\s\S]*?)\n```/
+  const match = text.match(regex)
+
+  if (!match) return null
+
+  try {
+    const json = JSON.parse(match[1])
+    if (json.model && json.prompt) {
+      return {
+        model: json.model,
+        prompt: json.prompt,
+        params: json.params || {},
+      }
+    }
+  } catch (e) {
+    console.error('Failed to parse generation block:', e)
+  }
+
+  return null
+}
+
+// Remove the generation block from text (so it's not shown in chat)
+function stripGenerationBlock(text: string): string {
+  return text.replace(/```generate\s*\n[\s\S]*?\n```/g, '').trim()
 }
 
 // Supported model IDs
@@ -54,7 +84,7 @@ const VISION_MODELS = [
 
 export async function POST(request: Request) {
   try {
-    const { messages, apiKey, modelId, skillsContext, referencedSkills } = await request.json() as ChatRequest
+    const { messages, apiKey, modelId, skillsContext, referencedSkills, selectedGenerationModelId } = await request.json() as ChatRequest
 
     if (!messages || !Array.isArray(messages)) {
       return new Response(JSON.stringify({ error: 'Messages are required' }), {
@@ -102,6 +132,18 @@ export async function POST(request: Request) {
         systemPrompt += `### ${skill.icon || '📌'} ${skill.name} (@${skill.shortcut})\n`
         systemPrompt += `${skill.content}\n\n`
       }
+    }
+
+    // Add selected generation model context
+    if (selectedGenerationModelId) {
+      systemPrompt += `\n\n## User's Selected Generation Model\n`
+      systemPrompt += `CRITICAL: The user has pre-selected "${selectedGenerationModelId}" in the UI.\n`
+      systemPrompt += `This means they know exactly which model they want - DO NOT:\n`
+      systemPrompt += `- Ask them to confirm the model choice\n`
+      systemPrompt += `- Recommend a different model\n`
+      systemPrompt += `- Ask what type of content they want to create (they chose the model already)\n\n`
+      systemPrompt += `Instead, skip directly to Step 2 (Prompt Crafting) and use "${selectedGenerationModelId}" for generation.\n`
+      systemPrompt += `Only offer model alternatives if they explicitly ask or if their request is impossible with this model.\n`
     }
 
     // Get the model
@@ -159,11 +201,102 @@ export async function POST(request: Request) {
           // Stream the response - pass parts array for multimodal
           const result = await chat.sendMessageStream(lastMessageParts)
 
+          let fullResponse = ''
+          let generationTriggered = false
+
           for await (const chunk of result.stream) {
             const text = chunk.text()
             if (text) {
+              fullResponse += text
+
+              // Send the content chunk
               const data = JSON.stringify({ content: text })
               controller.enqueue(encoder.encode(`data: ${data}\n\n`))
+
+              // Check for complete generation block
+              if (!generationTriggered) {
+                const genBlock = parseGenerationBlock(fullResponse)
+                if (genBlock) {
+                  generationTriggered = true
+
+                  // Send generation status: planning
+                  const planningData = JSON.stringify({
+                    generation: {
+                      status: 'planning',
+                      model: genBlock.model,
+                      params: genBlock.params,
+                    }
+                  })
+                  controller.enqueue(encoder.encode(`data: ${planningData}\n\n`))
+                }
+              }
+            }
+          }
+
+          // After streaming is complete, check for generation block
+          const genBlock = parseGenerationBlock(fullResponse)
+          if (genBlock) {
+            // Send generating status
+            const generatingData = JSON.stringify({
+              generation: {
+                status: 'generating',
+                model: genBlock.model,
+                params: genBlock.params,
+              }
+            })
+            controller.enqueue(encoder.encode(`data: ${generatingData}\n\n`))
+
+            try {
+              // Call the generation API
+              const genResponse = await fetch(new URL('/api/generate', request.url).href, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  model: genBlock.model,
+                  prompt: genBlock.prompt,
+                  params: genBlock.params,
+                }),
+              })
+
+              const genResult = await genResponse.json()
+
+              if (genResult.success && genResult.imageUrl) {
+                // Send complete status with result
+                const completeData = JSON.stringify({
+                  generation: {
+                    status: 'complete',
+                    model: genBlock.model,
+                    params: genBlock.params,
+                    result: {
+                      imageUrl: genResult.imageUrl,
+                      prompt: genBlock.prompt,
+                    }
+                  }
+                })
+                controller.enqueue(encoder.encode(`data: ${completeData}\n\n`))
+              } else {
+                // Send error status
+                const errorData = JSON.stringify({
+                  generation: {
+                    status: 'error',
+                    model: genBlock.model,
+                    params: genBlock.params,
+                    error: genResult.error || 'Generation failed',
+                  }
+                })
+                controller.enqueue(encoder.encode(`data: ${errorData}\n\n`))
+              }
+            } catch (genError: any) {
+              console.error('Generation error:', genError)
+              const errorData = JSON.stringify({
+                generation: {
+                  status: 'error',
+                  model: genBlock.model,
+                  params: genBlock.params,
+                  error: genError.message || 'Generation failed',
+                }
+              })
+              controller.enqueue(encoder.encode(`data: ${errorData}\n\n`))
             }
           }
 

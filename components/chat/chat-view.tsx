@@ -162,7 +162,7 @@ function WelcomeScreen({ onSuggestionClick }: { onSuggestionClick: (prompt: stri
 export function ChatView() {
   const { state, sendMessage, clearError } = useChat()
   const { messages, isLoading, error, errorCode } = state
-  const { parseSkillReferences, getSkillsContext } = useSkills()
+  const { parseSkillReferences } = useSkills()
 
   const [showApiKeyBanner, setShowApiKeyBanner] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -183,11 +183,11 @@ export function ChatView() {
     }
   }, [messages, isLoading])
 
-  const handleSend = useCallback((content: string, attachments?: any[]) => {
-    // Parse skill references from the message
+  const handleSend = useCallback((content: string, attachments?: any[], selectedGenerationModelId?: string) => {
+    // Parse skill references from the message (only @mentioned skills)
     const { skills: referencedSkills } = parseSkillReferences(content)
 
-    // Convert to API format
+    // Convert to API format - only include skills explicitly mentioned with @
     const skillsForApi: SkillForApi[] = referencedSkills.map(s => ({
       name: s.name,
       shortcut: s.shortcut || '',
@@ -195,17 +195,14 @@ export function ChatView() {
       content: s.content,
     }))
 
-    // Get general skills context (all active skills available)
-    const skillsContext = getSkillsContext()
-
-    sendMessage(content, attachments, skillsContext, skillsForApi.length > 0 ? skillsForApi : undefined)
-  }, [sendMessage, parseSkillReferences, getSkillsContext])
+    // Don't preload all skills - only pass explicitly referenced skills (via @ mentions)
+    sendMessage(content, attachments, undefined, skillsForApi.length > 0 ? skillsForApi : undefined, selectedGenerationModelId)
+  }, [sendMessage, parseSkillReferences])
 
   const handleSuggestionClick = useCallback((prompt: string) => {
-    // Suggestions don't have skill references, but include skills context
-    const skillsContext = getSkillsContext()
-    sendMessage(prompt, undefined, skillsContext)
-  }, [sendMessage, getSkillsContext])
+    // Don't preload skills for suggestions - user must explicitly mention with @
+    sendMessage(prompt, undefined, undefined)
+  }, [sendMessage])
 
   const hasMessages = messages.length > 0
 

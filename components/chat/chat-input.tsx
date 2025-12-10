@@ -13,7 +13,7 @@ import { useSkills } from '@/lib/context/skills-context'
 import { Skill } from '@/lib/types'
 
 interface ChatInputProps {
-  onSend: (content: string, attachments?: ChatAttachment[]) => void
+  onSend: (content: string, attachments?: ChatAttachment[], selectedGenerationModelId?: string) => void
   isLoading?: boolean
   placeholder?: string
 }
@@ -167,7 +167,8 @@ export function ChatInput({
     if (isLoading) return
     if (value.length > MAX_CHARS) return
 
-    onSend(value.trim(), attachments.length > 0 ? attachments : undefined)
+    // Pass the selected generation model ID
+    onSend(value.trim(), attachments.length > 0 ? attachments : undefined, selectedModel.id)
     setValue('')
     setAttachments([])
 
@@ -175,7 +176,7 @@ export function ChatInput({
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
-  }, [value, attachments, isLoading, onSend])
+  }, [value, attachments, isLoading, onSend, selectedModel.id])
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return

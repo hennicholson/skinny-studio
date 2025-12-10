@@ -284,15 +284,47 @@ export interface AppSettings {
 
 // -------------------- Mock Data --------------------
 export const mockModels: AIModel[] = [
+  // Top Tier Models
+  {
+    id: 'seedream-4.5',
+    name: 'Seedream 4.5',
+    provider: 'ByteDance',
+    description: 'Exceptional quality with up to 4K resolution and multi-reference support',
+    category: 'image',
+    tags: ['4K', 'high-quality', 'references', 'premium'],
+    capabilities: { speed: 'medium', quality: 'high' },
+    replicateId: 'bytedance/seedream-4.5'
+  },
+  {
+    id: 'flux-2-pro',
+    name: 'FLUX 2 Pro',
+    provider: 'Black Forest Labs',
+    description: 'Latest FLUX with 4MP resolution and up to 8 reference images',
+    category: 'image',
+    tags: ['4MP', 'references', 'premium', 'state-of-the-art'],
+    capabilities: { speed: 'medium', quality: 'high' },
+    replicateId: 'black-forest-labs/flux-2-pro'
+  },
+  {
+    id: 'nano-banana',
+    name: 'Nano Banana',
+    provider: 'Google',
+    description: 'Efficient model with excellent multi-image reference and style transfer',
+    category: 'image',
+    tags: ['fast', 'references', 'style-transfer'],
+    capabilities: { speed: 'fast', quality: 'high' },
+    replicateId: 'google/nano-banana'
+  },
+  // FLUX Family
   {
     id: 'flux-pro',
-    name: 'FLUX Pro',
+    name: 'FLUX Pro 1.1',
     provider: 'Black Forest Labs',
     description: 'High-quality image generation with excellent prompt following',
     category: 'image',
     tags: ['fast', 'high-quality', 'photorealistic'],
     capabilities: { speed: 'medium', quality: 'high' },
-    replicateId: 'black-forest-labs/flux-pro'
+    replicateId: 'black-forest-labs/flux-1.1-pro'
   },
   {
     id: 'flux-schnell',

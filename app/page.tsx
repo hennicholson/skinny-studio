@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import Image from 'next/image'
 import { ModeSwitcher, Mode } from '@/components/ui/mode-switcher'
 import { ChatView } from '@/components/chat/chat-view'
+import { ChatHistorySidebar } from '@/components/chat/chat-history-sidebar'
 import { GalleryView } from '@/components/gallery/gallery-view'
 import { SettingsView } from '@/components/settings/settings-view'
 import { ToastContainer } from '@/components/ui/toast'
@@ -14,6 +15,8 @@ import { useApp } from '@/lib/context/app-context'
 export default function Home() {
   // Mode state - start with chat
   const [mode, setMode] = useState<Mode>('chat')
+  // Chat history sidebar state
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false)
 
   // Get toast from app context
   const { showToast } = useApp()
@@ -117,6 +120,14 @@ export default function Home() {
           )}
         </AnimatePresence>
       </div>
+
+      {/* Chat History Sidebar - Only show when in chat mode */}
+      {mode === 'chat' && (
+        <ChatHistorySidebar
+          isOpen={isSidebarOpen}
+          onToggle={() => setIsSidebarOpen(!isSidebarOpen)}
+        />
+      )}
 
       {/* Toast Notifications */}
       <ToastContainer />

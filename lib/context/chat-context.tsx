@@ -1,8 +1,9 @@
 'use client'
 
-import { createContext, useContext, useReducer, useCallback, ReactNode } from 'react'
+import { createContext, useContext, useReducer, useCallback, ReactNode, useEffect } from 'react'
 import { getApiSettings } from '@/lib/api-settings'
 import { fileToBase64 } from '@/lib/image-utils'
+import { saveToStorage, loadFromStorage, STORAGE_KEYS } from '@/lib/storage'
 
 // Types
 export interface ChatAttachment {
@@ -36,12 +37,22 @@ export interface ChatMessage {
   isStreaming?: boolean
 }
 
+// Conversation type for chat history
+export interface Conversation {
+  id: string
+  title: string
+  messages: ChatMessage[]
+  createdAt: Date
+  updatedAt: Date
+}
+
 interface ChatState {
   messages: ChatMessage[]
   isLoading: boolean
   error: string | null
   errorCode: string | null
   currentConversationId: string | null
+  conversations: Conversation[]
 }
 
 type ChatAction =
@@ -53,6 +64,11 @@ type ChatAction =
   | { type: 'CLEAR_MESSAGES' }
   | { type: 'SET_CONVERSATION_ID'; payload: string | null }
   | { type: 'UPDATE_GENERATION_STATUS'; payload: { messageId: string; generation: GenerationResult } }
+  | { type: 'LOAD_CONVERSATIONS'; payload: Conversation[] }
+  | { type: 'ADD_CONVERSATION'; payload: Conversation }
+  | { type: 'UPDATE_CONVERSATION'; payload: { id: string; updates: Partial<Conversation> } }
+  | { type: 'DELETE_CONVERSATION'; payload: string }
+  | { type: 'SWITCH_CONVERSATION'; payload: { conversationId: string; messages: ChatMessage[] } }
 
 const initialState: ChatState = {
   messages: [],
@@ -60,6 +76,7 @@ const initialState: ChatState = {
   error: null,
   errorCode: null,
   currentConversationId: null,
+  conversations: [],
 }
 
 function chatReducer(state: ChatState, action: ChatAction): ChatState {
@@ -116,6 +133,41 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ),
       }
 
+    case 'LOAD_CONVERSATIONS':
+      return { ...state, conversations: action.payload }
+
+    case 'ADD_CONVERSATION':
+      return {
+        ...state,
+        conversations: [action.payload, ...state.conversations],
+      }
+
+    case 'UPDATE_CONVERSATION':
+      return {
+        ...state,
+        conversations: state.conversations.map((conv) =>
+          conv.id === action.payload.id
+            ? { ...conv, ...action.payload.updates }
+            : conv
+        ),
+      }
+
+    case 'DELETE_CONVERSATION':
+      return {
+        ...state,
+        conversations: state.conversations.filter((conv) => conv.id !== action.payload),
+        // If deleting current conversation, clear messages
+        messages: state.currentConversationId === action.payload ? [] : state.messages,
+        currentConversationId: state.currentConversationId === action.payload ? null : state.currentConversationId,
+      }
+
+    case 'SWITCH_CONVERSATION':
+      return {
+        ...state,
+        currentConversationId: action.payload.conversationId,
+        messages: action.payload.messages,
+      }
+
     default:
       return state
   }
@@ -141,7 +193,13 @@ interface ChatContextValue {
   clearError: () => void
   setConversationId: (id: string | null) => void
   updateGenerationStatus: (messageId: string, generation: GenerationResult) => void
-  sendMessage: (content: string, attachments?: ChatAttachment[], skillsContext?: string, referencedSkills?: SkillForApi[]) => Promise<void>
+  sendMessage: (content: string, attachments?: ChatAttachment[], skillsContext?: string, referencedSkills?: SkillForApi[], selectedGenerationModelId?: string) => Promise<void>
+  // Conversation management
+  createNewConversation: () => void
+  switchConversation: (id: string) => void
+  deleteConversation: (id: string) => void
+  renameConversation: (id: string, title: string) => void
+  saveCurrentConversation: () => void
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null)
@@ -196,7 +254,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     dispatch({ type: 'UPDATE_GENERATION_STATUS', payload: { messageId, generation } })
   }, [])
 
-  const sendMessage = useCallback(async (content: string, attachments?: ChatAttachment[], skillsContext?: string, referencedSkills?: SkillForApi[]) => {
+  const sendMessage = useCallback(async (content: string, attachments?: ChatAttachment[], skillsContext?: string, referencedSkills?: SkillForApi[], selectedGenerationModelId?: string) => {
     // Get API settings
     const settings = getApiSettings()
 
@@ -269,6 +327,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           modelId: settings.selectedModelId,
           skillsContext,
           referencedSkills,
+          selectedGenerationModelId,
         }),
       })
 
@@ -343,6 +402,124 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
   }, [state.messages, addMessage, appendToMessage, updateMessage, updateGenerationStatus, setLoading, setError])
 
+  // Load conversations from localStorage on mount
+  useEffect(() => {
+    const saved = loadFromStorage<Conversation[]>(STORAGE_KEYS.CONVERSATIONS)
+    if (saved && saved.length > 0) {
+      // Parse dates back from strings
+      const parsed = saved.map(conv => ({
+        ...conv,
+        createdAt: new Date(conv.createdAt),
+        updatedAt: new Date(conv.updatedAt),
+        messages: conv.messages.map(msg => ({
+          ...msg,
+          timestamp: new Date(msg.timestamp),
+        })),
+      }))
+      dispatch({ type: 'LOAD_CONVERSATIONS', payload: parsed })
+    }
+  }, [])
+
+  // Save conversations to localStorage when they change
+  useEffect(() => {
+    if (state.conversations.length > 0) {
+      saveToStorage(STORAGE_KEYS.CONVERSATIONS, state.conversations)
+    }
+  }, [state.conversations])
+
+  // Helper to generate title from first user message
+  const generateTitle = (messages: ChatMessage[]): string => {
+    const firstUserMessage = messages.find(m => m.role === 'user')
+    if (firstUserMessage) {
+      const title = firstUserMessage.content.slice(0, 50)
+      return title.length < firstUserMessage.content.length ? `${title}...` : title
+    }
+    return 'New Chat'
+  }
+
+  // Save current conversation (auto-save when messages change)
+  const saveCurrentConversation = useCallback(() => {
+    if (state.messages.length === 0) return
+
+    const now = new Date()
+
+    if (state.currentConversationId) {
+      // Update existing conversation
+      dispatch({
+        type: 'UPDATE_CONVERSATION',
+        payload: {
+          id: state.currentConversationId,
+          updates: {
+            messages: state.messages,
+            updatedAt: now,
+            title: generateTitle(state.messages),
+          },
+        },
+      })
+    } else {
+      // Create new conversation
+      const id = `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+      const newConversation: Conversation = {
+        id,
+        title: generateTitle(state.messages),
+        messages: state.messages,
+        createdAt: now,
+        updatedAt: now,
+      }
+      dispatch({ type: 'ADD_CONVERSATION', payload: newConversation })
+      dispatch({ type: 'SET_CONVERSATION_ID', payload: id })
+    }
+  }, [state.messages, state.currentConversationId])
+
+  // Auto-save when messages change (after at least one user message)
+  useEffect(() => {
+    const hasUserMessage = state.messages.some(m => m.role === 'user')
+    const hasCompletedMessage = state.messages.some(m => m.role === 'assistant' && !m.isStreaming)
+    if (hasUserMessage && hasCompletedMessage && !state.isLoading) {
+      saveCurrentConversation()
+    }
+  }, [state.messages, state.isLoading, saveCurrentConversation])
+
+  // Create a new conversation
+  const createNewConversation = useCallback(() => {
+    // Save current conversation first if there are messages
+    if (state.messages.length > 0 && !state.currentConversationId) {
+      saveCurrentConversation()
+    }
+    // Clear current conversation
+    dispatch({ type: 'CLEAR_MESSAGES' })
+    dispatch({ type: 'SET_CONVERSATION_ID', payload: null })
+  }, [state.messages, state.currentConversationId, saveCurrentConversation])
+
+  // Switch to a different conversation
+  const switchConversation = useCallback((id: string) => {
+    const conversation = state.conversations.find(c => c.id === id)
+    if (conversation) {
+      dispatch({
+        type: 'SWITCH_CONVERSATION',
+        payload: { conversationId: id, messages: conversation.messages },
+      })
+    }
+  }, [state.conversations])
+
+  // Delete a conversation
+  const deleteConversation = useCallback((id: string) => {
+    dispatch({ type: 'DELETE_CONVERSATION', payload: id })
+    // Update localStorage
+    const remaining = state.conversations.filter(c => c.id !== id)
+    if (remaining.length === 0) {
+      localStorage.removeItem(STORAGE_KEYS.CONVERSATIONS)
+    }
+  }, [state.conversations])
+
+  // Rename a conversation
+  const renameConversation = useCallback((id: string, title: string) => {
+    dispatch({
+      type: 'UPDATE_CONVERSATION',
+      payload: { id, updates: { title, updatedAt: new Date() } },
+    })
+  }, [])
+
   const value: ChatContextValue = {
     state,
     addMessage,
@@ -355,6 +532,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setConversationId,
     updateGenerationStatus,
     sendMessage,
+    createNewConversation,
+    switchConversation,
+    deleteConversation,
+    renameConversation,
+    saveCurrentConversation,
   }
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>

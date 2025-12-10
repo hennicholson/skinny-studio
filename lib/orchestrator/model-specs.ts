@@ -40,6 +40,166 @@ export interface ModelSpec {
 }
 
 export const MODEL_SPECS: ModelSpec[] = [
+  // ========== TOP TIER MODELS ==========
+  {
+    id: 'seedream-4.5',
+    name: 'Seedream 4.5',
+    replicateId: 'bytedance/seedream-4.5',
+    type: 'text-to-image',
+    capabilities: {
+      textRendering: true,
+      multipleReferences: true,
+    },
+    params: {
+      required: [
+        {
+          name: 'prompt',
+          type: 'string',
+          description: 'Text prompt for image generation',
+          required: true,
+        },
+      ],
+      optional: [
+        {
+          name: 'size',
+          type: 'enum',
+          description: 'Image resolution',
+          options: ['2K', '4K', 'custom'],
+          default: '2K',
+        },
+        {
+          name: 'aspect_ratio',
+          type: 'enum',
+          description: 'Image aspect ratio',
+          options: ['1:1', '4:3', '3:4', '16:9', '9:16', '3:2', '2:3', '21:9'],
+          default: '1:1',
+        },
+        {
+          name: 'image_input',
+          type: 'image',
+          description: 'Input images for image-to-image generation (1-14 images)',
+        },
+      ],
+    },
+    description: 'ByteDance\'s latest model with exceptional quality and up to 4K resolution.',
+    whenToUse: 'Use for high-resolution professional work, complex scenes, and when you need the highest quality output.',
+    tips: [
+      'Supports up to 4K resolution',
+      'Can use multiple reference images',
+      'Excellent for detailed, cinematic imagery',
+    ],
+  },
+  {
+    id: 'flux-2-pro',
+    name: 'FLUX 2 Pro',
+    replicateId: 'black-forest-labs/flux-2-pro',
+    type: 'text-to-image',
+    capabilities: {
+      textRendering: true,
+      multipleReferences: true,
+    },
+    params: {
+      required: [
+        {
+          name: 'prompt',
+          type: 'string',
+          description: 'Text prompt for image generation',
+          required: true,
+        },
+      ],
+      optional: [
+        {
+          name: 'aspect_ratio',
+          type: 'enum',
+          description: 'Image aspect ratio',
+          options: ['1:1', '16:9', '3:2', '2:3', '4:5', '5:4', '9:16', '3:4', '4:3', 'custom'],
+          default: '1:1',
+        },
+        {
+          name: 'resolution',
+          type: 'enum',
+          description: 'Resolution in megapixels',
+          options: ['0.5 MP', '1 MP', '2 MP', '4 MP'],
+          default: '1 MP',
+        },
+        {
+          name: 'input_images',
+          type: 'image',
+          description: 'Input images for image-to-image (max 8 images)',
+        },
+        {
+          name: 'output_format',
+          type: 'enum',
+          description: 'Output image format',
+          options: ['webp', 'jpg', 'png'],
+          default: 'webp',
+        },
+        {
+          name: 'safety_tolerance',
+          type: 'number',
+          description: 'Safety tolerance (1=strict, 5=permissive)',
+          default: 2,
+          range: { min: 1, max: 5 },
+        },
+      ],
+    },
+    description: 'The latest FLUX model with state-of-the-art quality and image-to-image support.',
+    whenToUse: 'Use for professional work, commercial projects, and when you need the best FLUX quality.',
+    tips: [
+      'Supports up to 4MP resolution',
+      'Up to 8 reference images for image-to-image',
+      'Best overall FLUX model',
+    ],
+  },
+  {
+    id: 'nano-banana',
+    name: 'Nano Banana',
+    replicateId: 'google/nano-banana',
+    type: 'text-to-image',
+    capabilities: {
+      textRendering: true,
+      multipleReferences: true,
+    },
+    params: {
+      required: [
+        {
+          name: 'prompt',
+          type: 'string',
+          description: 'Text description of the image to generate',
+          required: true,
+        },
+      ],
+      optional: [
+        {
+          name: 'image_input',
+          type: 'image',
+          description: 'Input images to transform or use as reference',
+        },
+        {
+          name: 'aspect_ratio',
+          type: 'enum',
+          description: 'Aspect ratio of the generated image',
+          options: ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'],
+          default: '1:1',
+        },
+        {
+          name: 'output_format',
+          type: 'enum',
+          description: 'Format of the output image',
+          options: ['jpg', 'png'],
+          default: 'jpg',
+        },
+      ],
+    },
+    description: 'Google\'s efficient model with excellent multi-image reference support.',
+    whenToUse: 'Use when you have reference images and want to transform or apply styles from them.',
+    tips: [
+      'Great for style transfer',
+      'Supports multiple reference images',
+      'Fast and efficient',
+    ],
+  },
+  // ========== FLUX FAMILY ==========
   {
     id: 'flux-schnell',
     name: 'FLUX Schnell',
