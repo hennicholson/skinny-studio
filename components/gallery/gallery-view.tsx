@@ -5,9 +5,8 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Images, Users, Search, Heart, Download, MoreHorizontal, Sparkles, Trash2, MessageSquare, Copy, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { MasonryGrid, MasonryItem } from '@/components/ui/masonry-grid'
-import { useGeneration } from '@/lib/context/generation-context'
+import { useGeneration, Generation } from '@/lib/context/generation-context'
 import { useApp } from '@/lib/context/app-context'
-import { Generation } from '@/lib/types'
 
 // Mock data for community/creator gallery
 const mockCommunityGenerations = [
@@ -90,14 +89,17 @@ function ImageDetailModal({ generation, onClose, onDelete }: ImageDetailModalPro
   }, [generation.prompt, showToast])
 
   const handleDownload = useCallback(async () => {
+    const imageUrl = generation.output_urls?.[0]
+    if (!imageUrl) return
     setIsDownloading(true)
     try {
-      const response = await fetch(generation.imageUrl)
+      const response = await fetch(imageUrl)
       const blob = await response.blob()
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `skinny-studio-${generation.model.name}-${Date.now()}.${blob.type.split('/')[1] || 'png'}`
+      const modelName = generation.studio_models?.name || generation.model_slug
+      a.download = `skinny-studio-${modelName}-${Date.now()}.${blob.type.split('/')[1] || 'png'}`
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
@@ -142,7 +144,7 @@ function ImageDetailModal({ generation, onClose, onDelete }: ImageDetailModalPro
           {/* Image */}
           <div className="flex-1 bg-black flex items-center justify-center p-4 min-h-[300px]">
             <img
-              src={generation.imageUrl}
+              src={generation.output_urls?.[0] || ''}
               alt={generation.prompt}
               className="max-w-full max-h-[60vh] object-contain rounded-lg"
             />
@@ -153,7 +155,7 @@ function ImageDetailModal({ generation, onClose, onDelete }: ImageDetailModalPro
             {/* Model badge */}
             <div className="mb-4">
               <span className="px-3 py-1.5 rounded-full bg-skinny-yellow/20 text-skinny-yellow text-xs font-bold uppercase tracking-wider">
-                {generation.model.name}
+                {generation.studio_models?.name || generation.model_slug}
               </span>
             </div>
 
@@ -167,7 +169,7 @@ function ImageDetailModal({ generation, onClose, onDelete }: ImageDetailModalPro
             <div className="mb-6">
               <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">Created</h4>
               <p className="text-sm text-white/60">
-                {new Date(generation.createdAt).toLocaleDateString('en-US', {
+                {new Date(generation.created_at).toLocaleDateString('en-US', {
                   year: 'numeric',
                   month: 'long',
                   day: 'numeric',
@@ -218,6 +220,7 @@ interface LibraryCardProps {
 
 function LibraryCard({ generation, onClick, onDelete }: LibraryCardProps) {
   const [isHovered, setIsHovered] = useState(false)
+  const modelName = generation.studio_models?.name || generation.model_slug
 
   return (
     <motion.div
@@ -229,7 +232,7 @@ function LibraryCard({ generation, onClick, onDelete }: LibraryCardProps) {
     >
       {/* Image */}
       <img
-        src={generation.imageUrl}
+        src={generation.output_urls?.[0] || ''}
         alt={generation.prompt}
         className="w-full h-auto"
         loading="lazy"
@@ -263,10 +266,10 @@ function LibraryCard({ generation, onClick, onDelete }: LibraryCardProps) {
               <p className="text-sm text-white line-clamp-2 mb-2">{generation.prompt}</p>
               <div className="flex items-center justify-between">
                 <span className="text-[10px] text-zinc-500 uppercase tracking-wider">
-                  {generation.model.name}
+                  {modelName}
                 </span>
                 <span className="text-[10px] text-zinc-500">
-                  {new Date(generation.createdAt).toLocaleDateString()}
+                  {new Date(generation.created_at).toLocaleDateString()}
                 </span>
               </div>
             </div>
@@ -277,7 +280,7 @@ function LibraryCard({ generation, onClick, onDelete }: LibraryCardProps) {
       {/* Model badge (always visible) */}
       <div className="absolute top-3 left-3">
         <span className="px-2 py-1 rounded-full bg-black/60 backdrop-blur-sm text-[10px] font-bold text-white uppercase tracking-wider">
-          {generation.model.name}
+          {modelName}
         </span>
       </div>
     </motion.div>
@@ -396,8 +399,8 @@ export function GalleryView() {
     if (!searchQuery) return userGenerations
     const query = searchQuery.toLowerCase()
     return userGenerations.filter(g =>
-      g.prompt.toLowerCase().includes(query) ||
-      g.model.name.toLowerCase().includes(query)
+      g.prompt?.toLowerCase().includes(query) ||
+      (g.studio_models?.name || g.model_slug || '').toLowerCase().includes(query)
     )
   }, [userGenerations, searchQuery])
 

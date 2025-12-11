@@ -1,26 +1,52 @@
 'use client'
 
 import { createContext, useContext, useState, useCallback, ReactNode, useEffect } from 'react'
-import { Generation } from '@/lib/types'
-import { mockGenerations } from '@/lib/types'
-import { saveToStorage, loadFromStorage, STORAGE_KEYS } from '@/lib/storage'
+import { useUser } from './user-context'
 
 // ============================================
-// Generation Context - Manage Generations
+// Generation Context - Database-First Approach
 // ============================================
+
+// Generation type matching the database schema
+export interface Generation {
+  id: string
+  whop_user_id?: string
+  user_id?: string
+  model_id?: string
+  model_slug: string
+  model_category: string
+  conversation_id?: string
+  message_id?: string
+  prompt: string
+  output_urls: string[]
+  parameters?: Record<string, any>
+  cost_cents?: number
+  replicate_status?: string
+  created_at: string
+  completed_at?: string
+  studio_models?: {
+    id: string
+    slug: string
+    name: string
+    category: string
+  }
+  // Legacy fields for UI compatibility
+  isPublic?: boolean
+}
 
 interface GenerationContextType {
-  // Generations
+  // Generations from database
   generations: Generation[]
-  isGenerating: boolean
+  isLoading: boolean
+  error: string | null
 
   // Actions
   addGeneration: (generation: Generation) => void
   updateGeneration: (id: string, updates: Partial<Generation>) => void
   deleteGeneration: (id: string) => void
-  togglePublic: (id: string) => void
+  refreshGenerations: () => Promise<void>
 
-  // Current generation state
+  // Current generation state (for input UI)
   currentPrompt: string
   setCurrentPrompt: (prompt: string) => void
   attachedImages: File[]
@@ -30,39 +56,87 @@ interface GenerationContextType {
   clearAttachedImages: () => void
 
   // Generation control
+  isGenerating: boolean
   setIsGenerating: (generating: boolean) => void
 
-  // Mock generations (for gallery)
+  // All generations (for gallery - user's generations only)
   allGenerations: Generation[]
 }
 
 const GenerationContext = createContext<GenerationContextType | null>(null)
 
 export function GenerationProvider({ children }: { children: ReactNode }) {
-  // Generations state
+  // Get user context to check authentication
+  const { user, isLoading: userLoading } = useUser()
+  const isAuthenticated = !!user
+
+  // Generations state - fetched from API
   const [generations, setGenerations] = useState<Generation[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [isGenerating, setIsGenerating] = useState(false)
 
-  // Current input state
+  // Current input state (for UI)
   const [currentPrompt, setCurrentPrompt] = useState('')
   const [attachedImages, setAttachedImages] = useState<File[]>([])
 
-  // Load generations from storage on mount
-  useEffect(() => {
-    const saved = loadFromStorage<Generation[]>(STORAGE_KEYS.GENERATIONS)
-    if (saved && saved.length > 0) {
-      setGenerations(saved)
+  // Fetch generations from API
+  const refreshGenerations = useCallback(async () => {
+    if (!isAuthenticated) {
+      setGenerations([])
+      setIsLoading(false)
+      return
     }
-  }, [])
 
-  // Save generations to storage when changed
-  useEffect(() => {
-    if (generations.length > 0) {
-      saveToStorage(STORAGE_KEYS.GENERATIONS, generations)
+    setIsLoading(true)
+    setError(null)
+
+    try {
+      // Build headers for Whop auth (dev mode support)
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      }
+
+      if (typeof window !== 'undefined') {
+        const devToken = localStorage.getItem('whop-dev-token')
+        const devUserId = localStorage.getItem('whop-dev-user-id')
+
+        if (devToken) {
+          headers['x-whop-user-token'] = devToken
+        }
+        if (devUserId) {
+          headers['x-whop-user-id'] = devUserId
+        }
+      }
+
+      const res = await fetch('/api/generations?limit=100', { headers })
+
+      if (res.ok) {
+        const data = await res.json()
+        setGenerations(data.generations || [])
+      } else if (res.status === 401) {
+        setError('Sign in to view your generations')
+        setGenerations([])
+      } else {
+        const errData = await res.json().catch(() => ({}))
+        setError(errData.error || 'Failed to fetch generations')
+      }
+    } catch (err) {
+      console.error('Failed to fetch generations:', err)
+      setError('Failed to load generations')
+    } finally {
+      setIsLoading(false)
     }
-  }, [generations])
+  }, [isAuthenticated])
 
-  // Add generation
+  // Fetch generations when user changes or on mount
+  useEffect(() => {
+    if (!userLoading) {
+      refreshGenerations()
+    }
+  }, [isAuthenticated, userLoading, refreshGenerations])
+
+  // Add generation (optimistically add to local state)
   const addGeneration = useCallback((generation: Generation) => {
     setGenerations(prev => [generation, ...prev])
   }, [])
@@ -70,20 +144,13 @@ export function GenerationProvider({ children }: { children: ReactNode }) {
   // Update generation
   const updateGeneration = useCallback((id: string, updates: Partial<Generation>) => {
     setGenerations(prev => prev.map(gen =>
-      gen.id === id ? { ...gen, ...updates, updatedAt: new Date() } : gen
+      gen.id === id ? { ...gen, ...updates } : gen
     ))
   }, [])
 
-  // Delete generation
+  // Delete generation (optimistic - also call API if needed)
   const deleteGeneration = useCallback((id: string) => {
     setGenerations(prev => prev.filter(gen => gen.id !== id))
-  }, [])
-
-  // Toggle public status
-  const togglePublic = useCallback((id: string) => {
-    setGenerations(prev => prev.map(gen =>
-      gen.id === id ? { ...gen, isPublic: !gen.isPublic, updatedAt: new Date() } : gen
-    ))
   }, [])
 
   // Add attached image
@@ -104,16 +171,17 @@ export function GenerationProvider({ children }: { children: ReactNode }) {
     setAttachedImages([])
   }, [])
 
-  // Combine user generations with mock for gallery
-  const allGenerations = [...generations, ...mockGenerations]
+  // All generations for gallery (just user's real generations, no mock data)
+  const allGenerations = generations
 
   const value: GenerationContextType = {
     generations,
-    isGenerating,
+    isLoading,
+    error,
     addGeneration,
     updateGeneration,
     deleteGeneration,
-    togglePublic,
+    refreshGenerations,
     currentPrompt,
     setCurrentPrompt,
     attachedImages,
@@ -121,6 +189,7 @@ export function GenerationProvider({ children }: { children: ReactNode }) {
     addAttachedImage,
     removeAttachedImage,
     clearAttachedImages,
+    isGenerating,
     setIsGenerating,
     allGenerations,
   }

@@ -8,6 +8,7 @@ import { ChatAttachment } from '@/lib/context/chat-context'
 import { validateImage, createThumbnailUrl, revokeThumbnailUrl } from '@/lib/image-utils'
 import { selectedModelSupportsVision, getSelectedModel } from '@/lib/api-settings'
 import { ModelSelector } from '@/components/ui/model-selector'
+import { ImageSourcePicker } from './image-source-picker'
 import { useApp } from '@/lib/context/app-context'
 import { useSkills } from '@/lib/context/skills-context'
 import { Skill } from '@/lib/types'
@@ -31,6 +32,7 @@ export function ChatInput({
   const [isFocused, setIsFocused] = useState(false)
   const [supportsVision, setSupportsVision] = useState(false)
   const [showModelSelector, setShowModelSelector] = useState(false)
+  const [showImagePicker, setShowImagePicker] = useState(false)
 
   // Skill suggestions state
   const [showSkillSuggestions, setShowSkillSuggestions] = useState(false)
@@ -360,7 +362,7 @@ export function ChatInput({
                 <ChevronDown size={12} className="text-white/40" />
               </motion.button>
 
-              {/* Attachment Button */}
+              {/* Attachment Button - Opens image source picker */}
               <input
                 ref={fileInputRef}
                 type="file"
@@ -371,24 +373,18 @@ export function ChatInput({
                 disabled={!supportsVision}
               />
               <motion.button
-                onClick={() => supportsVision && fileInputRef.current?.click()}
-                disabled={!supportsVision || attachments.length >= MAX_IMAGES}
+                onClick={() => setShowImagePicker(true)}
+                disabled={attachments.length >= MAX_IMAGES}
                 whileTap={{ scale: 0.94 }}
                 className={cn(
                   "p-2 rounded-lg transition-all duration-200 relative group",
-                  !supportsVision
+                  attachments.length >= MAX_IMAGES
                     ? "text-white/20 cursor-not-allowed"
-                    : attachments.length >= MAX_IMAGES
-                      ? "text-white/20 cursor-not-allowed"
-                      : "text-white/40 hover:text-white/90 hover:bg-white/[0.05]"
+                    : "text-white/40 hover:text-white/90 hover:bg-white/[0.05]"
                 )}
-                title={supportsVision ? "Attach images" : "Vision not supported"}
+                title="Add image"
               >
-                {supportsVision ? (
-                  <Paperclip size={16} />
-                ) : (
-                  <ImageOff size={16} />
-                )}
+                <Paperclip size={16} />
                 <motion.span
                   className="absolute inset-0 bg-white/[0.05] rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
                 />
@@ -443,6 +439,19 @@ export function ChatInput({
         }}
         recentModelIds={recentModels}
         onModelSelected={() => setShowModelSelector(false)}
+      />
+
+      {/* Image Source Picker */}
+      <ImageSourcePicker
+        isOpen={showImagePicker}
+        onClose={() => setShowImagePicker(false)}
+        onSelectLocalFile={() => fileInputRef.current?.click()}
+        onSelectImage={(attachment) => {
+          if (attachments.length < MAX_IMAGES) {
+            setAttachments(prev => [...prev, attachment])
+          }
+        }}
+        supportsVision={supportsVision}
       />
     </div>
   )

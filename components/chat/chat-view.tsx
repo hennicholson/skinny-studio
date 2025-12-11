@@ -4,13 +4,14 @@ import { useEffect, useRef, useCallback, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Image from 'next/image'
 import { cn } from '@/lib/utils'
-import { Key, ExternalLink, AlertCircle, X, Camera, Palette, Share2, Play } from 'lucide-react'
-import { useChat, SkillForApi } from '@/lib/context/chat-context'
+import { Key, ExternalLink, AlertCircle, X, Camera, Palette, Share2, Play, CheckCircle } from 'lucide-react'
+import { useChat, SkillForApi, SkillCreationData } from '@/lib/context/chat-context'
 import { useSkills } from '@/lib/context/skills-context'
 import { ChatMessage } from './chat-message'
 import { ChatInput } from './chat-input'
 import { hasApiKey } from '@/lib/api-settings'
 import { EtherealBackground } from '@/components/ui/ethereal-background'
+import { toast } from 'sonner'
 
 // Welcome suggestions - no emojis, use icons instead
 const SUGGESTIONS = [
@@ -160,9 +161,47 @@ function WelcomeScreen({ onSuggestionClick }: { onSuggestionClick: (prompt: stri
 }
 
 export function ChatView() {
-  const { state, sendMessage, clearError } = useChat()
+  const { state, sendMessage, clearError, setOnSkillCreation } = useChat()
   const { messages, isLoading, error, errorCode } = state
-  const { parseSkillReferences } = useSkills()
+  const { parseSkillReferences, addSkill } = useSkills()
+
+  // Wire up skill creation callback - when AI creates a skill, add it to the skills library
+  useEffect(() => {
+    const handleSkillCreation = (skillData: SkillCreationData) => {
+      try {
+        // Convert SkillCreationData to the format addSkill expects
+        const newSkillId = addSkill({
+          name: skillData.name,
+          shortcut: skillData.shortcut,
+          description: skillData.description,
+          category: skillData.category,
+          icon: skillData.icon || '🎨',
+          content: skillData.content,
+          tags: skillData.tags || [],
+          isBuiltIn: false,
+          isActive: true, // Auto-activate new skills
+        })
+
+        // Show success toast
+        toast.success(`Skill "${skillData.name}" created!`, {
+          description: `Use @${skillData.shortcut} to apply this skill`,
+          icon: skillData.icon || '🎨',
+        })
+
+        console.log('Created new skill:', newSkillId, skillData)
+      } catch (error) {
+        console.error('Failed to create skill:', error)
+        toast.error('Failed to create skill')
+      }
+    }
+
+    setOnSkillCreation(handleSkillCreation)
+
+    // Cleanup on unmount
+    return () => {
+      setOnSkillCreation(null)
+    }
+  }, [addSkill, setOnSkillCreation])
 
   const [showApiKeyBanner, setShowApiKeyBanner] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)

@@ -39,6 +39,17 @@ interface GenerationBlock {
   params: Record<string, any>
 }
 
+interface SkillCreationBlock {
+  name: string
+  shortcut: string
+  description: string
+  category: 'style' | 'technique' | 'tool' | 'workflow' | 'custom'
+  icon?: string
+  content: string
+  tags?: string[]
+  examples?: string[]
+}
+
 // Parse generation blocks from AI response
 function parseGenerationBlock(text: string): GenerationBlock | null {
   const regex = /```generate\s*\n([\s\S]*?)\n```/
@@ -57,6 +68,34 @@ function parseGenerationBlock(text: string): GenerationBlock | null {
     }
   } catch (e) {
     console.error('Failed to parse generation block:', e)
+  }
+
+  return null
+}
+
+// Parse skill creation blocks from AI response
+function parseSkillCreationBlock(text: string): SkillCreationBlock | null {
+  const regex = /```create-skill\s*\n([\s\S]*?)\n```/
+  const match = text.match(regex)
+
+  if (!match) return null
+
+  try {
+    const json = JSON.parse(match[1])
+    if (json.name && json.shortcut && json.content) {
+      return {
+        name: json.name,
+        shortcut: json.shortcut,
+        description: json.description || '',
+        category: json.category || 'custom',
+        icon: json.icon,
+        content: json.content,
+        tags: json.tags || [],
+        examples: json.examples || [],
+      }
+    }
+  } catch (e) {
+    console.error('Failed to parse skill creation block:', e)
   }
 
   return null
@@ -231,6 +270,16 @@ export async function POST(request: Request) {
                 }
               }
             }
+          }
+
+          // After streaming is complete, check for skill creation block
+          const skillBlock = parseSkillCreationBlock(fullResponse)
+          if (skillBlock) {
+            // Send skill creation event to client
+            const skillData = JSON.stringify({
+              skillCreation: skillBlock
+            })
+            controller.enqueue(encoder.encode(`data: ${skillData}\n\n`))
           }
 
           // After streaming is complete, check for generation block

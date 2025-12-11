@@ -8,9 +8,8 @@ import { ChatMessage as ChatMessageType, ChatAttachment, GenerationResult } from
 import { useState, useCallback } from 'react'
 import Image from 'next/image'
 import ReactMarkdown from 'react-markdown'
-import { useGeneration } from '@/lib/context/generation-context'
+import { useGeneration, Generation } from '@/lib/context/generation-context'
 import { useApp } from '@/lib/context/app-context'
-import { Generation } from '@/lib/types'
 
 // Strip generation blocks from display text
 function stripGenerationBlock(text: string): string {
@@ -29,28 +28,25 @@ function GenerationInline({ generation }: { generation: GenerationResult }) {
   const { addGeneration, generations } = useGeneration()
   const { showToast } = useApp()
 
-  // Check if already saved
+  // Check if already saved - compare against output_urls array
   const isAlreadySaved = useMemo(() => {
     if (!result?.imageUrl) return false
-    return generations.some(g => g.imageUrl === result.imageUrl)
+    return generations.some(g => g.output_urls?.includes(result.imageUrl))
   }, [generations, result?.imageUrl])
 
   const handleSaveToLibrary = useCallback(() => {
     if (!result?.imageUrl || isAlreadySaved || isSaved) return
 
+    // Create generation matching the database schema
     const newGeneration: Generation = {
       id: `gen_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      imageUrl: result.imageUrl,
       prompt: result.prompt,
-      model: {
-        id: model,
-        name: model,
-        provider: 'AI',
-      },
+      output_urls: [result.imageUrl],
+      model_slug: model,
+      model_category: 'image',
       parameters: params,
-      createdAt: new Date(),
+      created_at: new Date().toISOString(),
       isPublic: false,
-      likes: 0,
     }
 
     addGeneration(newGeneration)

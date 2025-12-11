@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useContext, useReducer, useCallback, ReactNode, useEffect } from 'react'
+import { createContext, useContext, useReducer, useCallback, ReactNode, useEffect, useState, useRef } from 'react'
 import { getApiSettings } from '@/lib/api-settings'
 import { fileToBase64 } from '@/lib/image-utils'
 import { saveToStorage, loadFromStorage, STORAGE_KEYS } from '@/lib/storage'
@@ -181,6 +181,18 @@ export interface SkillForApi {
   content: string
 }
 
+// Skill creation data from AI
+export interface SkillCreationData {
+  name: string
+  shortcut: string
+  description: string
+  category: 'style' | 'technique' | 'tool' | 'workflow' | 'custom'
+  icon?: string
+  content: string
+  tags?: string[]
+  examples?: string[]
+}
+
 // Context
 interface ChatContextValue {
   state: ChatState
@@ -200,6 +212,9 @@ interface ChatContextValue {
   deleteConversation: (id: string) => void
   renameConversation: (id: string, title: string) => void
   saveCurrentConversation: () => void
+  // Skill creation callback
+  onSkillCreation: ((skill: SkillCreationData) => void) | null
+  setOnSkillCreation: (callback: ((skill: SkillCreationData) => void) | null) => void
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null)
@@ -212,6 +227,7 @@ function generateId() {
 // Provider
 export function ChatProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(chatReducer, initialState)
+  const [onSkillCreationCallback, setOnSkillCreationCallback] = useState<((skill: SkillCreationData) => void) | null>(null)
 
   const addMessage = useCallback((message: Omit<ChatMessage, 'id' | 'timestamp'>) => {
     const id = generateId()
@@ -380,6 +396,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
               if (parsed.generation) {
                 updateGenerationStatus(assistantMessageId, parsed.generation)
               }
+              if (parsed.skillCreation && onSkillCreationCallback) {
+                // Trigger the skill creation callback
+                onSkillCreationCallback(parsed.skillCreation as SkillCreationData)
+              }
             } catch {
               // Ignore parse errors for incomplete chunks
             }
@@ -400,7 +420,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     } finally {
       setLoading(false)
     }
-  }, [state.messages, addMessage, appendToMessage, updateMessage, updateGenerationStatus, setLoading, setError])
+  }, [state.messages, addMessage, appendToMessage, updateMessage, updateGenerationStatus, setLoading, setError, onSkillCreationCallback])
 
   // Load conversations from localStorage on mount
   useEffect(() => {
@@ -437,14 +457,76 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     return 'New Chat'
   }
 
+  // Track last saved message index to avoid re-saving messages
+  const lastSavedIndexRef = useRef<Map<string, number>>(new Map())
+
+  // Sync conversation to Supabase API
+  const syncToSupabase = useCallback(async (conversationId: string, messages: ChatMessage[], title: string, isNew: boolean) => {
+    try {
+      if (isNew) {
+        // Create conversation in Supabase
+        const createRes = await fetch('/api/conversations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title }),
+        })
+
+        if (createRes.ok) {
+          const { conversation } = await createRes.json()
+          if (conversation?.id) {
+            // Save all messages to the new conversation
+            for (const msg of messages) {
+              if (msg.role === 'user' || (msg.role === 'assistant' && !msg.isStreaming)) {
+                await fetch(`/api/conversations/${conversation.id}/messages`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    role: msg.role,
+                    content: msg.content,
+                  }),
+                })
+              }
+            }
+            lastSavedIndexRef.current.set(conversation.id, messages.length - 1)
+            return conversation.id
+          }
+        }
+      } else {
+        // Get last saved index for this conversation
+        const lastSavedIndex = lastSavedIndexRef.current.get(conversationId) ?? -1
+
+        // Only save new messages that haven't been saved yet
+        for (let i = lastSavedIndex + 1; i < messages.length; i++) {
+          const msg = messages[i]
+          if (msg.role === 'user' || (msg.role === 'assistant' && !msg.isStreaming)) {
+            await fetch(`/api/conversations/${conversationId}/messages`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                role: msg.role,
+                content: msg.content,
+              }),
+            })
+            lastSavedIndexRef.current.set(conversationId, i)
+          }
+        }
+      }
+    } catch (error) {
+      // Silently fail for unauthenticated users - localStorage still works
+      console.log('Supabase sync skipped (user may not be authenticated):', error)
+    }
+    return null
+  }, [])
+
   // Save current conversation (auto-save when messages change)
   const saveCurrentConversation = useCallback(() => {
     if (state.messages.length === 0) return
 
     const now = new Date()
+    const title = generateTitle(state.messages)
 
     if (state.currentConversationId) {
-      // Update existing conversation
+      // Update existing conversation locally
       dispatch({
         type: 'UPDATE_CONVERSATION',
         payload: {
@@ -452,24 +534,30 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           updates: {
             messages: state.messages,
             updatedAt: now,
-            title: generateTitle(state.messages),
+            title,
           },
         },
       })
+
+      // Sync to Supabase (for authenticated users)
+      syncToSupabase(state.currentConversationId, state.messages, title, false)
     } else {
-      // Create new conversation
+      // Create new conversation locally
       const id = `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
       const newConversation: Conversation = {
         id,
-        title: generateTitle(state.messages),
+        title,
         messages: state.messages,
         createdAt: now,
         updatedAt: now,
       }
       dispatch({ type: 'ADD_CONVERSATION', payload: newConversation })
       dispatch({ type: 'SET_CONVERSATION_ID', payload: id })
+
+      // Sync to Supabase (for authenticated users)
+      syncToSupabase(id, state.messages, title, true)
     }
-  }, [state.messages, state.currentConversationId])
+  }, [state.messages, state.currentConversationId, syncToSupabase])
 
   // Auto-save when messages change (after at least one user message)
   useEffect(() => {
@@ -537,6 +625,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     deleteConversation,
     renameConversation,
     saveCurrentConversation,
+    onSkillCreation: onSkillCreationCallback,
+    setOnSkillCreation: setOnSkillCreationCallback,
   }
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>

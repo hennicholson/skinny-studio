@@ -11,6 +11,7 @@ import { SettingsView } from '@/components/settings/settings-view'
 import { ToastContainer } from '@/components/ui/toast'
 import { User, Wallet, Settings } from 'lucide-react'
 import { useApp } from '@/lib/context/app-context'
+import { useUser } from '@/lib/context/user-context'
 
 export default function Home() {
   // Mode state - start with chat
@@ -20,6 +21,9 @@ export default function Home() {
 
   // Get toast from app context
   const { showToast } = useApp()
+
+  // Get user data and balance
+  const { balanceDollars, isLoading: userLoading, whop } = useUser()
 
   return (
     <main className="h-screen bg-black flex flex-col overflow-hidden">
@@ -58,7 +62,9 @@ export default function Home() {
             {/* Balance */}
             <button className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 hover:border-zinc-700 transition-colors">
               <Wallet size={14} className="text-skinny-yellow" />
-              <span className="text-xs font-medium text-zinc-300">$10.00</span>
+              <span className="text-xs font-medium text-zinc-300">
+                {userLoading ? '...' : `$${balanceDollars}`}
+              </span>
             </button>
 
             {/* Settings */}
