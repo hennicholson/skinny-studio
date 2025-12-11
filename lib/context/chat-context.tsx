@@ -6,6 +6,22 @@ import { fileToBase64 } from '@/lib/image-utils'
 import { saveToStorage, loadFromStorage, STORAGE_KEYS } from '@/lib/storage'
 
 // Types
+export type ImagePurpose = 'reference' | 'starting_frame' | 'edit_target' | 'last_frame'
+
+export const IMAGE_PURPOSE_LABELS: Record<ImagePurpose, string> = {
+  reference: 'Reference',
+  starting_frame: 'Start Frame',
+  edit_target: 'Edit',
+  last_frame: 'End Frame',
+}
+
+export const IMAGE_PURPOSE_DESCRIPTIONS: Record<ImagePurpose, string> = {
+  reference: 'Style or content reference (ingredients)',
+  starting_frame: 'First frame for video generation',
+  edit_target: 'Image to modify or edit',
+  last_frame: 'End frame for video (Veo)',
+}
+
 export interface ChatAttachment {
   id: string
   type: 'image' | 'reference'
@@ -14,6 +30,7 @@ export interface ChatAttachment {
   file?: File
   base64?: string
   mimeType?: string
+  purpose?: ImagePurpose
 }
 
 export interface GenerationResult {
@@ -215,6 +232,9 @@ interface ChatContextValue {
   // Skill creation callback
   onSkillCreation: ((skill: SkillCreationData) => void) | null
   setOnSkillCreation: (callback: ((skill: SkillCreationData) => void) | null) => void
+  // Generation completion callback (to refresh gallery/library)
+  onGenerationComplete: (() => void) | null
+  setOnGenerationComplete: (callback: (() => void) | null) => void
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null)
@@ -228,6 +248,7 @@ function generateId() {
 export function ChatProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(chatReducer, initialState)
   const [onSkillCreationCallback, setOnSkillCreationCallback] = useState<((skill: SkillCreationData) => void) | null>(null)
+  const [onGenerationCompleteCallback, setOnGenerationCompleteCallback] = useState<(() => void) | null>(null)
 
   const addMessage = useCallback((message: Omit<ChatMessage, 'id' | 'timestamp'>) => {
     const id = generateId()
@@ -331,12 +352,26 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             name: a.name,
             base64: a.base64,
             mimeType: a.mimeType,
+            purpose: a.purpose,  // Include purpose for generation API
           })),
         }))
 
+      // Build headers including Whop authentication from localStorage
+      const chatHeaders: Record<string, string> = {
+        'Content-Type': 'application/json',
+      }
+
+      // Add Whop auth headers if available (for generation saving)
+      if (typeof window !== 'undefined') {
+        const devToken = localStorage.getItem('whop-dev-token')
+        const devUserId = localStorage.getItem('whop-dev-user-id')
+        if (devToken) chatHeaders['x-whop-user-token'] = devToken
+        if (devUserId) chatHeaders['x-whop-user-id'] = devUserId
+      }
+
       const response = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: chatHeaders,
         body: JSON.stringify({
           messages: apiMessages,
           apiKey: settings.googleApiKey,
@@ -395,9 +430,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
               }
               if (parsed.generation) {
                 updateGenerationStatus(assistantMessageId, parsed.generation)
+                // When generation completes successfully, trigger refresh callback
+                if (parsed.generation.status === 'complete' && onGenerationCompleteCallback) {
+                  onGenerationCompleteCallback()
+                }
               }
-              if (parsed.skillCreation && onSkillCreationCallback) {
-                // Trigger the skill creation callback
+              if (parsed.skillCreation && onSkillCreationCallback && parsed.skillCreation.name) {
+                // Trigger the skill creation callback only if valid data
                 onSkillCreationCallback(parsed.skillCreation as SkillCreationData)
               }
             } catch {
@@ -420,7 +459,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     } finally {
       setLoading(false)
     }
-  }, [state.messages, addMessage, appendToMessage, updateMessage, updateGenerationStatus, setLoading, setError, onSkillCreationCallback])
+  }, [state.messages, addMessage, appendToMessage, updateMessage, updateGenerationStatus, setLoading, setError, onSkillCreationCallback, onGenerationCompleteCallback])
 
   // Load conversations from localStorage on mount
   useEffect(() => {
@@ -627,6 +666,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     saveCurrentConversation,
     onSkillCreation: onSkillCreationCallback,
     setOnSkillCreation: setOnSkillCreationCallback,
+    onGenerationComplete: onGenerationCompleteCallback,
+    setOnGenerationComplete: setOnGenerationCompleteCallback,
   }
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>

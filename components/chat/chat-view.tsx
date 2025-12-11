@@ -4,9 +4,10 @@ import { useEffect, useRef, useCallback, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Image from 'next/image'
 import { cn } from '@/lib/utils'
-import { Key, ExternalLink, AlertCircle, X, Camera, Palette, Share2, Play, CheckCircle } from 'lucide-react'
+import { Key, ExternalLink, AlertCircle, X, Camera, Palette, Share2, Play } from 'lucide-react'
 import { useChat, SkillForApi, SkillCreationData } from '@/lib/context/chat-context'
 import { useSkills } from '@/lib/context/skills-context'
+import { useGeneration } from '@/lib/context/generation-context'
 import { ChatMessage } from './chat-message'
 import { ChatInput } from './chat-input'
 import { hasApiKey } from '@/lib/api-settings'
@@ -161,9 +162,10 @@ function WelcomeScreen({ onSuggestionClick }: { onSuggestionClick: (prompt: stri
 }
 
 export function ChatView() {
-  const { state, sendMessage, clearError, setOnSkillCreation } = useChat()
+  const { state, sendMessage, clearError, setOnSkillCreation, setOnGenerationComplete } = useChat()
   const { messages, isLoading, error, errorCode } = state
   const { parseSkillReferences, addSkill } = useSkills()
+  const { refreshGenerations } = useGeneration()
 
   // Wire up skill creation callback - when AI creates a skill, add it to the skills library
   useEffect(() => {
@@ -202,6 +204,18 @@ export function ChatView() {
       setOnSkillCreation(null)
     }
   }, [addSkill, setOnSkillCreation])
+
+  // Wire up generation completion callback - refresh the generations list when a new generation completes
+  useEffect(() => {
+    setOnGenerationComplete(() => {
+      // Refresh generations to include the newly created one from the database
+      refreshGenerations()
+    })
+
+    return () => {
+      setOnGenerationComplete(null)
+    }
+  }, [refreshGenerations, setOnGenerationComplete])
 
   const [showApiKeyBanner, setShowApiKeyBanner] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)

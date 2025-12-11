@@ -1,70 +1,29 @@
 'use client'
 
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Images, Users, Search, Heart, Download, MoreHorizontal, Sparkles, Trash2, MessageSquare, Copy, X } from 'lucide-react'
+import { Images, Users, Search, Heart, Download, MoreHorizontal, Sparkles, Trash2, MessageSquare, Copy, X, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { MasonryGrid, MasonryItem } from '@/components/ui/masonry-grid'
 import { useGeneration, Generation } from '@/lib/context/generation-context'
 import { useApp } from '@/lib/context/app-context'
+import { createClient } from '@supabase/supabase-js'
 
-// Mock data for community/creator gallery
-const mockCommunityGenerations = [
-  {
-    id: 'c1',
-    imageUrl: 'https://picsum.photos/seed/comm1/600/800',
-    prompt: 'Futuristic cityscape at night with neon lights',
-    model: 'FLUX Pro',
-    createdAt: new Date('2024-01-15'),
-    likes: 156,
-    creator: 'alex_creates',
-  },
-  {
-    id: 'c2',
-    imageUrl: 'https://picsum.photos/seed/comm2/800/600',
-    prompt: 'Fantasy character portrait with magical elements',
-    model: 'SDXL',
-    createdAt: new Date('2024-01-14'),
-    likes: 243,
-    creator: 'art_master',
-  },
-  {
-    id: 'c3',
-    imageUrl: 'https://picsum.photos/seed/comm3/600/900',
-    prompt: 'Hyper-realistic product render',
-    model: 'FLUX Pro',
-    createdAt: new Date('2024-01-13'),
-    likes: 89,
-    creator: 'design_studio',
-  },
-  {
-    id: 'c4',
-    imageUrl: 'https://picsum.photos/seed/comm4/700/500',
-    prompt: 'Anime style illustration of a warrior',
-    model: 'SDXL',
-    createdAt: new Date('2024-01-12'),
-    likes: 312,
-    creator: 'anime_pro',
-  },
-  {
-    id: 'c5',
-    imageUrl: 'https://picsum.photos/seed/comm5/500/700',
-    prompt: 'Ethereal nature scene with mystical fog',
-    model: 'FLUX Pro',
-    createdAt: new Date('2024-01-11'),
-    likes: 178,
-    creator: 'nature_vibes',
-  },
-  {
-    id: 'c6',
-    imageUrl: 'https://picsum.photos/seed/comm6/800/800',
-    prompt: 'Abstract fluid art in vibrant colors',
-    model: 'FLUX Pro',
-    createdAt: new Date('2024-01-10'),
-    likes: 267,
-    creator: 'color_master',
-  },
-]
+// Supabase client for fetching gallery images
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://bkbcoxyumovpqiqfcxoa.supabase.co'
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJrYmNveHl1bW92cHFpcWZjeG9hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY1MjEyMDIsImV4cCI6MjA3MjA5NzIwMn0.i4X_9vK91hyPGkXm2JscPf4xhDEFTLI5sqEnPQIb1kM'
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+
+// Type for creator gallery images from Supabase storage
+interface CreatorGalleryImage {
+  id: string
+  imageUrl: string
+  prompt: string
+  model: string
+  createdAt: Date
+  likes: number
+  creator?: string
+}
 
 type Tab = 'library' | 'community'
 
@@ -391,8 +350,62 @@ export function GalleryView() {
   const [activeTab, setActiveTab] = useState<Tab>('library')
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedGeneration, setSelectedGeneration] = useState<Generation | null>(null)
+  const [creatorGalleryImages, setCreatorGalleryImages] = useState<CreatorGalleryImage[]>([])
+  const [isLoadingGallery, setIsLoadingGallery] = useState(false)
   const { generations: userGenerations, deleteGeneration } = useGeneration()
   const { showToast } = useApp()
+
+  // Fetch creator gallery images from Supabase storage
+  useEffect(() => {
+    async function fetchCreatorGalleryImages() {
+      setIsLoadingGallery(true)
+      try {
+        const { data, error } = await supabase.storage
+          .from('gallery')
+          .list('creator-gallery', {
+            limit: 100,
+            sortBy: { column: 'created_at', order: 'desc' }
+          })
+
+        if (error) {
+          console.error('Error fetching gallery images:', error)
+          return
+        }
+
+        if (data) {
+          // Convert storage objects to gallery image format
+          const images: CreatorGalleryImage[] = data
+            .filter(file => file.name.match(/\.(jpeg|jpg|png|webp)$/i))
+            .map((file, index) => {
+              // Extract prompt from filename (files are named like: A_3d_digital_202512091634.jpeg)
+              const nameWithoutExt = file.name.replace(/\.(jpeg|jpg|png|webp)$/i, '')
+              const promptFromName = nameWithoutExt
+                .replace(/_/g, ' ')
+                .replace(/\d{12}$/, '') // Remove timestamp suffix
+                .trim()
+
+              return {
+                id: `gallery_${index}_${file.id || file.name}`,
+                imageUrl: `${SUPABASE_URL}/storage/v1/object/public/gallery/creator-gallery/${file.name}`,
+                prompt: promptFromName || 'Creative generation',
+                model: 'Skinny Studio',
+                createdAt: new Date(file.created_at || Date.now()),
+                likes: Math.floor(Math.random() * 300) + 50, // Random likes for demo
+                creator: 'skinny_creator'
+              }
+            })
+
+          setCreatorGalleryImages(images)
+        }
+      } catch (err) {
+        console.error('Failed to fetch gallery images:', err)
+      } finally {
+        setIsLoadingGallery(false)
+      }
+    }
+
+    fetchCreatorGalleryImages()
+  }, [])
 
   // Filter user generations by search
   const filteredUserGenerations = useMemo(() => {
@@ -406,13 +419,13 @@ export function GalleryView() {
 
   // Filter community generations by search
   const filteredCommunityGenerations = useMemo(() => {
-    if (!searchQuery) return mockCommunityGenerations
+    if (!searchQuery) return creatorGalleryImages
     const query = searchQuery.toLowerCase()
-    return mockCommunityGenerations.filter(g =>
+    return creatorGalleryImages.filter(g =>
       g.prompt.toLowerCase().includes(query) ||
       g.model.toLowerCase().includes(query)
     )
-  }, [searchQuery])
+  }, [searchQuery, creatorGalleryImages])
 
   const handleDeleteGeneration = useCallback((id: string) => {
     deleteGeneration(id)
@@ -520,7 +533,17 @@ export function GalleryView() {
           )
         ) : (
           // Community Gallery
-          filteredCommunityGenerations.length > 0 ? (
+          isLoadingGallery ? (
+            /* Loading State */
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="flex flex-col items-center justify-center py-20 text-center"
+            >
+              <Loader2 size={40} className="text-skinny-yellow animate-spin mb-4" />
+              <p className="text-zinc-500">Loading creator gallery...</p>
+            </motion.div>
+          ) : filteredCommunityGenerations.length > 0 ? (
             <MasonryGrid>
               {filteredCommunityGenerations.map((generation) => (
                 <MasonryItem key={generation.id}>
@@ -541,9 +564,13 @@ export function GalleryView() {
               <div className="w-20 h-20 rounded-2xl bg-zinc-900 border-2 border-zinc-800 flex items-center justify-center mb-6">
                 <Users size={32} className="text-zinc-600" />
               </div>
-              <h3 className="text-xl font-bold text-white mb-2">No results found</h3>
+              <h3 className="text-xl font-bold text-white mb-2">
+                {searchQuery ? 'No results found' : 'Gallery is empty'}
+              </h3>
               <p className="text-zinc-500 max-w-md">
-                Try adjusting your search to find what you're looking for.
+                {searchQuery
+                  ? "Try adjusting your search to find what you're looking for."
+                  : "Check back soon for featured creator content!"}
               </p>
             </motion.div>
           )

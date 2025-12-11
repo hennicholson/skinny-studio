@@ -57,7 +57,18 @@ export function ImageSourcePicker({
     setIsLoading(true)
     setError(null)
     try {
-      const res = await fetch('/api/generations?category=image&limit=50')
+      // Build headers with Whop auth from localStorage (dev mode support)
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      }
+      if (typeof window !== 'undefined') {
+        const devToken = localStorage.getItem('whop-dev-token')
+        const devUserId = localStorage.getItem('whop-dev-user-id')
+        if (devToken) headers['x-whop-user-token'] = devToken
+        if (devUserId) headers['x-whop-user-id'] = devUserId
+      }
+
+      const res = await fetch('/api/generations?category=image&limit=50', { headers })
       if (res.ok) {
         const data = await res.json()
         setGenerations(data.generations || [])

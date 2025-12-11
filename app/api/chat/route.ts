@@ -3,12 +3,16 @@ import { generateSystemPrompt } from '@/lib/orchestrator/system-prompt'
 
 export const runtime = 'edge'
 
+// Image purpose types - must match frontend
+type ImagePurpose = 'reference' | 'starting_frame' | 'edit_target' | 'last_frame'
+
 interface ChatAttachment {
   type: 'image' | 'reference'
   url: string
   name: string
   base64?: string
   mimeType?: string
+  purpose?: ImagePurpose  // User-selected purpose for the image
 }
 
 interface ChatMessage {
@@ -37,6 +41,9 @@ interface GenerationBlock {
   model: string
   prompt: string
   params: Record<string, any>
+  // Video-specific fields
+  duration?: number
+  resolution?: string
 }
 
 interface SkillCreationBlock {
@@ -64,6 +71,9 @@ function parseGenerationBlock(text: string): GenerationBlock | null {
         model: json.model,
         prompt: json.prompt,
         params: json.params || {},
+        // Video-specific fields
+        duration: json.duration,
+        resolution: json.resolution,
       }
     }
   } catch (e) {
@@ -191,6 +201,14 @@ export async function POST(request: Request) {
       systemInstruction: systemPrompt,
     })
 
+    // Purpose labels for context injection
+    const PURPOSE_CONTEXT: Record<ImagePurpose, string> = {
+      reference: 'REFERENCE IMAGE (style/content reference, ingredients for the generation)',
+      starting_frame: 'STARTING FRAME (first frame for video generation, image-to-video)',
+      edit_target: 'EDIT TARGET (image to be modified/edited)',
+      last_frame: 'LAST FRAME (end frame for video generation)',
+    }
+
     // Convert messages to Gemini format with image support
     const convertMessageToParts = (msg: ChatMessage) => {
       const parts: any[] = []
@@ -202,8 +220,20 @@ export async function POST(request: Request) {
 
       // Add images if model supports vision and message has attachments
       if (supportsVision && msg.attachments?.length) {
-        for (const attachment of msg.attachments) {
-          if (attachment.type === 'image' && attachment.base64 && attachment.mimeType) {
+        // Build context about attached images
+        const imageAttachments = msg.attachments.filter(a => a.type === 'image' && a.base64 && a.mimeType)
+
+        if (imageAttachments.length > 0) {
+          // Add context text about the images BEFORE the image data
+          const imageContexts = imageAttachments.map((att, i) => {
+            const purposeLabel = att.purpose ? PURPOSE_CONTEXT[att.purpose] : 'REFERENCE IMAGE'
+            return `[Image ${i + 1}: ${purposeLabel}]`
+          }).join('\n')
+
+          parts.push({ text: `\n\n--- ATTACHED IMAGES ---\n${imageContexts}\n` })
+
+          // Add the actual image data
+          for (const attachment of imageAttachments) {
             parts.push({
               inlineData: {
                 data: attachment.base64,
@@ -296,14 +326,40 @@ export async function POST(request: Request) {
             controller.enqueue(encoder.encode(`data: ${generatingData}\n\n`))
 
             try {
-              // Call the generation API
+              // Call the generation API - forward auth headers for user identification
+              const forwardHeaders: Record<string, string> = {
+                'Content-Type': 'application/json',
+              }
+
+              // Forward Whop authentication headers
+              const whopToken = request.headers.get('x-whop-user-token')
+              const whopUserId = request.headers.get('x-whop-user-id')
+              const cookie = request.headers.get('cookie')
+
+              if (whopToken) forwardHeaders['x-whop-user-token'] = whopToken
+              if (whopUserId) forwardHeaders['x-whop-user-id'] = whopUserId
+              if (cookie) forwardHeaders['cookie'] = cookie
+
+              // Collect images from the last message with their purposes
+              const imagesWithPurposes = lastMessage.attachments
+                ?.filter(att => att.type === 'image' && att.url)
+                .map(att => ({
+                  url: att.url,
+                  purpose: att.purpose || 'reference',  // Default to reference if no purpose set
+                })) || []
+
               const genResponse = await fetch(new URL('/api/generate', request.url).href, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: forwardHeaders,
                 body: JSON.stringify({
                   model: genBlock.model,
                   prompt: genBlock.prompt,
                   params: genBlock.params,
+                  // Video-specific fields
+                  duration: genBlock.duration,
+                  resolution: genBlock.resolution,
+                  // Pass images with purposes
+                  images: imagesWithPurposes.length > 0 ? imagesWithPurposes : undefined,
                 }),
               })
 

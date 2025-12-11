@@ -18,12 +18,20 @@ export default function Home() {
   const [mode, setMode] = useState<Mode>('chat')
   // Chat history sidebar state
   const [isSidebarOpen, setIsSidebarOpen] = useState(false)
+  // Settings panel state - which panel to show when entering settings
+  const [settingsPanel, setSettingsPanel] = useState<'main' | 'profile' | 'balance'>('main')
 
   // Get toast from app context
   const { showToast } = useApp()
 
   // Get user data and balance
   const { balanceDollars, isLoading: userLoading, whop } = useUser()
+
+  // Navigate to settings with balance panel
+  const goToBalanceSettings = () => {
+    setSettingsPanel('balance')
+    setMode('settings')
+  }
 
   return (
     <main className="h-screen bg-black flex flex-col overflow-hidden">
@@ -59,8 +67,11 @@ export default function Home() {
             animate={{ opacity: 1, x: 0 }}
             className="flex items-center gap-2"
           >
-            {/* Balance */}
-            <button className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 hover:border-zinc-700 transition-colors">
+            {/* Balance - clickable to go to balance/usage settings */}
+            <button
+              onClick={goToBalanceSettings}
+              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 hover:border-skinny-yellow/50 hover:bg-zinc-800 transition-colors"
+            >
               <Wallet size={14} className="text-skinny-yellow" />
               <span className="text-xs font-medium text-zinc-300">
                 {userLoading ? '...' : `$${balanceDollars}`}
@@ -69,7 +80,10 @@ export default function Home() {
 
             {/* Settings */}
             <button
-              onClick={() => setMode('settings')}
+              onClick={() => {
+                setSettingsPanel('main')
+                setMode('settings')
+              }}
               className="w-8 h-8 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center hover:border-zinc-700 transition-colors"
             >
               <Settings size={16} className="text-zinc-400" />
@@ -121,7 +135,7 @@ export default function Home() {
               transition={{ duration: 0.2 }}
               className="flex-1 flex flex-col overflow-hidden"
             >
-              <SettingsView />
+              <SettingsView initialPanel={settingsPanel} />
             </motion.div>
           )}
         </AnimatePresence>

@@ -34,7 +34,7 @@ interface AppContextType {
 const defaultSettings: AppSettings = {
   recentModels: [],
   favoriteModels: [],
-  defaultModel: 'flux-pro',
+  defaultModel: 'flux-2-pro',
   theme: 'dark',
 }
 
@@ -49,7 +49,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Models state
   const [models] = useState<AIModel[]>(mockModels)
   const [selectedModel, setSelectedModelState] = useState<AIModel>(
-    mockModels.find(m => m.id === 'flux-pro') || mockModels[0]
+    mockModels.find(m => m.id === 'flux-2-pro') || mockModels[0]
   )
   const [recentModels, setRecentModels] = useState<string[]>([])
 

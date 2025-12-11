@@ -71,13 +71,13 @@ export const MODEL_SPECS: ModelSpec[] = [
           name: 'aspect_ratio',
           type: 'enum',
           description: 'Image aspect ratio',
-          options: ['1:1', '4:3', '3:4', '16:9', '9:16', '3:2', '2:3', '21:9'],
-          default: '1:1',
+          options: ['match_input_image', '1:1', '4:3', '3:4', '16:9', '9:16', '3:2', '2:3', '21:9'],
+          default: 'match_input_image',
         },
         {
           name: 'image_input',
           type: 'image',
-          description: 'Input images for image-to-image generation (1-14 images)',
+          description: 'Input images for reference/image-to-image generation (1-14 images). Images should be marked as "Reference" purpose.',
         },
       ],
     },
@@ -85,8 +85,9 @@ export const MODEL_SPECS: ModelSpec[] = [
     whenToUse: 'Use for high-resolution professional work, complex scenes, and when you need the highest quality output.',
     tips: [
       'Supports up to 4K resolution',
-      'Can use multiple reference images',
+      'Can use up to 14 reference images via image_input parameter',
       'Excellent for detailed, cinematic imagery',
+      'When user attaches images as "Reference", they are passed via image_input',
     ],
   },
   {
@@ -112,7 +113,7 @@ export const MODEL_SPECS: ModelSpec[] = [
           name: 'aspect_ratio',
           type: 'enum',
           description: 'Image aspect ratio',
-          options: ['1:1', '16:9', '3:2', '2:3', '4:5', '5:4', '9:16', '3:4', '4:3', 'custom'],
+          options: ['match_input_image', 'custom', '1:1', '16:9', '3:2', '2:3', '4:5', '5:4', '9:16', '3:4', '4:3'],
           default: '1:1',
         },
         {
@@ -125,7 +126,7 @@ export const MODEL_SPECS: ModelSpec[] = [
         {
           name: 'input_images',
           type: 'image',
-          description: 'Input images for image-to-image (max 8 images)',
+          description: 'Input images for reference/image-to-image (max 8 images). Images should be marked as "Reference" purpose.',
         },
         {
           name: 'output_format',
@@ -137,9 +138,15 @@ export const MODEL_SPECS: ModelSpec[] = [
         {
           name: 'safety_tolerance',
           type: 'number',
-          description: 'Safety tolerance (1=strict, 5=permissive)',
+          description: 'Safety tolerance (1=strict, 6=permissive)',
           default: 2,
-          range: { min: 1, max: 5 },
+          range: { min: 1, max: 6 },
+        },
+        {
+          name: 'prompt_upsampling',
+          type: 'boolean',
+          description: 'Automatically modify the prompt for more creative generation',
+          default: false,
         },
       ],
     },
@@ -147,8 +154,9 @@ export const MODEL_SPECS: ModelSpec[] = [
     whenToUse: 'Use for professional work, commercial projects, and when you need the best FLUX quality.',
     tips: [
       'Supports up to 4MP resolution',
-      'Up to 8 reference images for image-to-image',
+      'Up to 8 reference images via input_images parameter',
       'Best overall FLUX model',
+      'When user attaches images as "Reference", they are passed via input_images',
     ],
   },
   {
@@ -716,12 +724,17 @@ export const MODEL_SPECS: ModelSpec[] = [
         {
           name: 'image',
           type: 'image',
-          description: 'Starting frame image (16:9 or 9:16)',
+          description: 'Starting frame image for I2V mode. Best at 1280x720 (16:9) or 720x1280 (9:16). User should mark as "Start Frame".',
         },
         {
           name: 'last_frame',
           type: 'image',
-          description: 'Ending frame for interpolation',
+          description: 'Ending frame for interpolation. Creates transition from start to end. User should mark as "End Frame".',
+        },
+        {
+          name: 'reference_images',
+          type: 'image',
+          description: '1-3 reference images for subject consistency (R2V mode). Only works with 16:9 aspect ratio and 8s duration. User should mark as "Reference".',
         },
         {
           name: 'duration',
@@ -747,22 +760,25 @@ export const MODEL_SPECS: ModelSpec[] = [
         {
           name: 'generate_audio',
           type: 'boolean',
-          description: 'Generate audio with the video',
+          description: 'Generate audio with the video. Audio adds to cost (50¢/s vs 25¢/s).',
           default: true,
         },
         {
-          name: 'reference_images',
-          type: 'image',
-          description: '1-3 reference images for subject consistency',
+          name: 'negative_prompt',
+          type: 'string',
+          description: 'Description of what to exclude from the generated video',
         },
       ],
     },
     description: 'Google\'s flagship video model with audio generation and 1080p output.',
     whenToUse: 'Use for high-quality videos with audio, especially with reference subjects.',
     tips: [
-      'Generates audio automatically',
-      'Supports start/end frame interpolation',
-      'Up to 3 reference images for consistency',
+      'Generates audio automatically (can toggle off to save cost)',
+      'Supports start/end frame interpolation via image and last_frame',
+      'Up to 3 reference images for R2V (subject consistency) mode',
+      'When user marks image as "Start Frame", it goes to image parameter',
+      'When user marks image as "End Frame", it goes to last_frame parameter',
+      'When user marks images as "Reference", they go to reference_images parameter',
     ],
   },
   {
@@ -787,11 +803,11 @@ export const MODEL_SPECS: ModelSpec[] = [
           description: 'What to avoid in the video',
         },
         {
-          name: 'size',
+          name: 'resolution',
           type: 'enum',
           description: 'Video resolution',
-          options: ['832*480', '480*832', '1280*720', '720*1280', '1920*1080', '1080*1920'],
-          default: '1280*720',
+          options: ['480p', '720p', '1080p'],
+          default: '720p',
         },
         {
           name: 'duration',
@@ -808,12 +824,125 @@ export const MODEL_SPECS: ModelSpec[] = [
         },
       ],
     },
-    description: 'Alibaba\'s text-to-video model with audio sync support.',
-    whenToUse: 'Use for quick video generation with various aspect ratios.',
+    description: 'Alibaba\'s text-to-video model. No image input - use Wan 2.5 I2V for image-to-video.',
+    whenToUse: 'Use for text-to-video generation when you don\'t have a starting image.',
     tips: [
-      'Supports 1080p output',
-      'Can sync with audio input',
+      'Supports up to 1080p output',
       'Good for various aspect ratios',
+      'Use Wan 2.5 I2V instead if you have a starting image',
+    ],
+  },
+  {
+    id: 'wan-2.5-i2v',
+    name: 'Wan 2.5 I2V',
+    replicateId: 'wan-video/wan-2.5-i2v',
+    type: 'video',
+    capabilities: {},
+    params: {
+      required: [
+        {
+          name: 'image',
+          type: 'image',
+          description: 'Input image for video generation. This is REQUIRED. User should mark as "Start Frame".',
+          required: true,
+        },
+        {
+          name: 'prompt',
+          type: 'string',
+          description: 'Text prompt for video generation',
+          required: true,
+        },
+      ],
+      optional: [
+        {
+          name: 'negative_prompt',
+          type: 'string',
+          description: 'What to avoid in the video',
+        },
+        {
+          name: 'resolution',
+          type: 'enum',
+          description: 'Video resolution',
+          options: ['480p', '720p', '1080p'],
+          default: '720p',
+        },
+        {
+          name: 'duration',
+          type: 'enum',
+          description: 'Duration in seconds',
+          options: ['5', '10'],
+          default: '5',
+        },
+        {
+          name: 'enable_prompt_expansion',
+          type: 'boolean',
+          description: 'Enable prompt optimizer',
+          default: true,
+        },
+        {
+          name: 'audio',
+          type: 'string',
+          description: 'Audio file (wav/mp3, 3-30s, ≤15MB) for voice/music synchronization',
+        },
+      ],
+    },
+    description: 'Alibaba\'s image-to-video model. REQUIRES a starting image.',
+    whenToUse: 'Use for image-to-video when you have a starting frame to animate.',
+    tips: [
+      'Requires an input image - user should mark as "Start Frame"',
+      'Supports up to 1080p output',
+      'Can sync with audio file for music/voice',
+      'Good budget option for I2V compared to Veo',
+    ],
+  },
+  {
+    id: 'kling-v2.5-turbo-pro',
+    name: 'Kling V2.5 Turbo Pro',
+    replicateId: 'kwaivgi/kling-v2.5-turbo-pro',
+    type: 'video',
+    capabilities: {},
+    params: {
+      required: [
+        {
+          name: 'prompt',
+          type: 'string',
+          description: 'Text prompt for video generation',
+          required: true,
+        },
+      ],
+      optional: [
+        {
+          name: 'start_image',
+          type: 'image',
+          description: 'First frame of the video for I2V. User should mark as "Start Frame". When provided, aspect_ratio is ignored.',
+        },
+        {
+          name: 'duration',
+          type: 'enum',
+          description: 'Video duration',
+          options: ['5', '10'],
+          default: '5',
+        },
+        {
+          name: 'aspect_ratio',
+          type: 'enum',
+          description: 'Video aspect ratio (ignored if start_image provided)',
+          options: ['16:9', '9:16', '1:1'],
+          default: '16:9',
+        },
+        {
+          name: 'negative_prompt',
+          type: 'string',
+          description: 'Things you do not want to see in the video',
+        },
+      ],
+    },
+    description: 'Kuaishou\'s video model with excellent motion and quality.',
+    whenToUse: 'Use for high-quality video with realistic motion, supports both T2V and I2V.',
+    tips: [
+      'For I2V, attach image and mark as "Start Frame" - goes to start_image parameter',
+      'Aspect ratio is auto-matched from start_image if provided',
+      'Good quality-to-cost ratio',
     ],
   },
   {
@@ -832,6 +961,11 @@ export const MODEL_SPECS: ModelSpec[] = [
         },
       ],
       optional: [
+        {
+          name: 'first_frame_image',
+          type: 'image',
+          description: 'First frame image for video start (I2V). User should mark as "Start Frame". Output matches image aspect ratio.',
+        },
         {
           name: 'duration',
           type: 'enum',
@@ -852,11 +986,6 @@ export const MODEL_SPECS: ModelSpec[] = [
           description: 'Use prompt optimizer',
           default: true,
         },
-        {
-          name: 'first_frame_image',
-          type: 'image',
-          description: 'First frame image for video start',
-        },
       ],
     },
     description: 'MiniMax\'s cinematic video model optimized for human motion and VFX.',
@@ -865,6 +994,7 @@ export const MODEL_SPECS: ModelSpec[] = [
       'Best for realistic human motion',
       'Great for cinematic VFX',
       '1080p at 6 seconds, 768p at 10 seconds',
+      'For I2V, attach image and mark as "Start Frame" - goes to first_frame_image parameter',
     ],
   },
 ]

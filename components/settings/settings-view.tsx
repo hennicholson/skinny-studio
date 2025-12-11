@@ -2,9 +2,10 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { User, CreditCard, Zap, Palette, Bell, Shield, ChevronRight, Key, Check, Eye, EyeOff, ExternalLink, Cpu, Mic, Wallet, Plus, X, Loader2, ArrowLeft, Sparkles } from 'lucide-react'
+import { User, CreditCard, Zap, Palette, Bell, Shield, ChevronRight, Key, Check, Eye, EyeOff, ExternalLink, Cpu, Mic, Wallet, Plus, X, Loader2, ArrowLeft, Sparkles, Receipt } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SkillsManager } from '@/components/skills/skills-manager'
+import { SpendingLog } from '@/components/settings/spending-log'
 import { useUser } from '@/lib/context/user-context'
 import { createSdk } from '@whop/iframe'
 import {
@@ -99,7 +100,11 @@ function ModelCard({
   )
 }
 
-export function SettingsView() {
+interface SettingsViewProps {
+  initialPanel?: 'main' | 'profile' | 'balance'
+}
+
+export function SettingsView({ initialPanel = 'main' }: SettingsViewProps) {
   const [settings, setSettings] = useState<ApiSettings>({
     googleApiKey: '',
     selectedModelId: 'gemini-2.0-flash-lite',
@@ -111,8 +116,13 @@ export function SettingsView() {
   const [showSkillsManager, setShowSkillsManager] = useState(false)
 
   // Account views
-  const [activePanel, setActivePanel] = useState<'main' | 'profile' | 'balance'>('main')
+  const [activePanel, setActivePanel] = useState<'main' | 'profile' | 'balance'>(initialPanel)
   const [topupPlans, setTopupPlans] = useState<TopupPlan[]>([])
+
+  // Sync activePanel with initialPanel when it changes
+  useEffect(() => {
+    setActivePanel(initialPanel)
+  }, [initialPanel])
   const [loadingPlans, setLoadingPlans] = useState(false)
   const [purchaseLoading, setPurchaseLoading] = useState<number | null>(null)
 
@@ -415,30 +425,71 @@ export function SettingsView() {
               </div>
             )}
 
+            {/* Spending History */}
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.2 }}
+              className="mt-8"
+            >
+              <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-4 flex items-center gap-2">
+                <Receipt size={14} />
+                Spending History
+              </h3>
+              <SpendingLog />
+            </motion.div>
+
             {/* Usage Info */}
             <div className="mt-8 p-4 rounded-xl bg-zinc-900/30 border border-zinc-800/50">
               <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-3">Pricing Guide</h4>
               <div className="space-y-2 text-xs text-zinc-400">
+                <p className="text-[10px] text-zinc-600 mb-2">Image Generation</p>
                 <div className="flex justify-between">
-                  <span>FLUX Schnell</span>
-                  <span className="text-zinc-300">2¢ per image</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>FLUX Dev</span>
-                  <span className="text-zinc-300">5¢ per image</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>FLUX Pro</span>
-                  <span className="text-zinc-300">8¢ per image</span>
+                  <span>P-Image Edit</span>
+                  <span className="text-zinc-300">3¢ per image</span>
                 </div>
                 <div className="flex justify-between">
                   <span>Seedream 4.5</span>
-                  <span className="text-zinc-300">8¢ per image</span>
+                  <span className="text-zinc-300">7¢ per image</span>
                 </div>
                 <div className="flex justify-between">
-                  <span>FLUX 2 Pro</span>
-                  <span className="text-zinc-300">10¢ per image</span>
+                  <span>FLUX 2 Pro / Dev</span>
+                  <span className="text-zinc-300">7¢ per image</span>
                 </div>
+                <div className="flex justify-between">
+                  <span>Qwen Image Edit Plus</span>
+                  <span className="text-zinc-300">7¢ per image</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Nano Banana Pro</span>
+                  <span className="text-zinc-300">30¢ per image</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Nano Banana Pro 4K</span>
+                  <span className="text-zinc-300">45¢ per image</span>
+                </div>
+                <p className="text-[10px] text-zinc-600 mb-2 mt-4">Video Generation (per second)</p>
+                <div className="flex justify-between">
+                  <span>Wan 2.5 T2V (480p)</span>
+                  <span className="text-zinc-300">8¢/sec</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Wan 2.5 I2V (720p)</span>
+                  <span className="text-zinc-300">13¢/sec</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Kling V2.5 Turbo Pro</span>
+                  <span className="text-zinc-300">15¢/sec</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Veo 3.1 Fast</span>
+                  <span className="text-zinc-300">15-25¢/sec</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Veo 3.1</span>
+                  <span className="text-zinc-300">25-50¢/sec</span>
+                </div>
+                <p className="text-[10px] text-zinc-600 mt-2">Veo pricing varies with audio (higher) vs no audio (lower)</p>
               </div>
             </div>
           </motion.div>

@@ -229,6 +229,75 @@ export const builtInSkills: Omit<Skill, 'id' | 'createdAt' | 'usageCount'>[] = [
       'Instagram post for a coffee brand @social vibrant',
       'TikTok thumbnail for a cooking video @social 9:16'
     ]
+  },
+  {
+    name: 'Veo 3.1 Video Prompting',
+    description: 'Professional video generation prompting for Google Veo 3.1',
+    category: 'technique',
+    icon: '🎥',
+    content: `## Google Veo 3.1 Prompting Guide
+
+### The Veo Formula
+Structure prompts as: [Cinematography] + [Subject] + [Action] + [Context] + [Style & Ambiance]
+
+### Optimal Prompt Length
+- 3-6 sentences (100-150 words) works best
+- Front-load critical visual elements
+- Be specific but not overly verbose
+
+### Camera Movements
+- **Dolly**: Camera moves toward/away from subject
+- **Tracking**: Camera follows subject movement
+- **Crane/Jib**: Vertical camera movement
+- **Pan**: Horizontal rotation from fixed point
+- **Tilt**: Vertical rotation from fixed point
+- **Vertigo/Dolly Zoom**: Zoom in while moving back (or vice versa)
+- **POV**: First-person perspective shot
+- **Handheld**: Natural, documentary-style movement
+- **Static**: Fixed camera position
+
+### Lens & Framing
+- 35mm lens (cinematic standard)
+- 50mm lens (portrait-friendly)
+- Wide-angle lens (expansive scenes)
+- Shallow depth of field (background blur)
+- Deep focus (everything sharp)
+
+### Lighting Keywords
+- Golden hour, blue hour
+- Low-key lighting (dramatic shadows)
+- High-key lighting (bright, minimal shadows)
+- Rembrandt lighting (portrait)
+- Backlit, silhouette
+- Neon lighting, practical lights
+
+### Timestamp Prompting (Multi-Shot)
+For complex sequences, use timestamps:
+\`[00:00-00:02] Medium shot of character entering room\`
+\`[00:02-00:04] Close-up on character's face showing surprise\`
+\`[00:04-00:06] Wide establishing shot revealing the situation\`
+
+### Important Tips
+- Add "(no subtitles)" multiple times to prevent unwanted text
+- Text rendering is unreliable - use post-production overlays
+- Specify ethnicity/appearance for consistent characters
+- Include ambient sound descriptions for audio generation
+- Use film references: "in the style of Blade Runner"
+
+### Quality Boosters
+- "Cinematic quality, film grain"
+- "Professional color grading"
+- "8K resolution, sharp detail"
+- "Award-winning cinematography"`,
+    tags: ['video', 'veo', 'google', 'cinematic', 'motion', 'ai-video'],
+    isBuiltIn: true,
+    isActive: true,
+    shortcut: 'veo',
+    examples: [
+      'Cinematic dolly shot of a samurai walking through misty bamboo forest @veo',
+      'POV handheld shot running through neon-lit Tokyo streets at night @veo',
+      '@veo tracking shot following a dancer, golden hour lighting, shallow depth of field'
+    ]
   }
 ]
 
@@ -283,8 +352,9 @@ export interface AppSettings {
 }
 
 // -------------------- Mock Data --------------------
+// These models match the studio_models database table
 export const mockModels: AIModel[] = [
-  // Top Tier Models
+  // === IMAGE MODELS ===
   {
     id: 'seedream-4.5',
     name: 'Seedream 4.5',
@@ -306,6 +376,16 @@ export const mockModels: AIModel[] = [
     replicateId: 'black-forest-labs/flux-2-pro'
   },
   {
+    id: 'flux-2-dev',
+    name: 'FLUX 2 Dev',
+    provider: 'Black Forest Labs',
+    description: 'Development version of FLUX 2 with great quality at lower cost',
+    category: 'image',
+    tags: ['fast', 'high-quality', 'photorealistic'],
+    capabilities: { speed: 'fast', quality: 'high' },
+    replicateId: 'black-forest-labs/flux-2-dev'
+  },
+  {
     id: 'nano-banana',
     name: 'Nano Banana',
     provider: 'Google',
@@ -315,86 +395,96 @@ export const mockModels: AIModel[] = [
     capabilities: { speed: 'fast', quality: 'high' },
     replicateId: 'google/nano-banana'
   },
-  // FLUX Family
   {
-    id: 'flux-pro',
-    name: 'FLUX Pro 1.1',
-    provider: 'Black Forest Labs',
-    description: 'High-quality image generation with excellent prompt following',
+    id: 'nano-banana-pro',
+    name: 'Nano Banana Pro',
+    provider: 'Google',
+    description: 'Premium version with 1K/2K resolution output',
     category: 'image',
-    tags: ['fast', 'high-quality', 'photorealistic'],
+    tags: ['premium', 'high-res', '2K'],
     capabilities: { speed: 'medium', quality: 'high' },
-    replicateId: 'black-forest-labs/flux-1.1-pro'
+    replicateId: 'google/nano-banana-pro'
   },
   {
-    id: 'flux-schnell',
-    name: 'FLUX Schnell',
-    provider: 'Black Forest Labs',
-    description: 'Lightning-fast generation for quick iterations',
+    id: 'nano-banana-pro-4k',
+    name: 'Nano Banana Pro 4K',
+    provider: 'Google',
+    description: 'Ultra-high resolution 4K output for professional use',
     category: 'image',
-    tags: ['fastest', 'drafts', 'iterations'],
-    capabilities: { speed: 'fast', quality: 'standard' },
-    replicateId: 'black-forest-labs/flux-schnell'
-  },
-  {
-    id: 'sdxl',
-    name: 'Stable Diffusion XL',
-    provider: 'Stability AI',
-    description: 'Versatile image generation with fine control',
-    category: 'image',
-    tags: ['versatile', 'community', 'customizable'],
-    capabilities: { speed: 'medium', quality: 'high' },
-    replicateId: 'stability-ai/sdxl'
-  },
-  {
-    id: 'sdxl-lightning',
-    name: 'SDXL Lightning',
-    provider: 'ByteDance',
-    description: 'Ultra-fast SDXL variant with 4-step generation',
-    category: 'image',
-    tags: ['fast', '4-step', 'efficient'],
-    capabilities: { speed: 'fast', quality: 'standard' },
-    replicateId: 'bytedance/sdxl-lightning-4step'
-  },
-  {
-    id: 'playground-v2.5',
-    name: 'Playground v2.5',
-    provider: 'Playground AI',
-    description: 'Aesthetic-focused model for beautiful outputs',
-    category: 'image',
-    tags: ['aesthetic', 'artistic', 'stylized'],
-    capabilities: { speed: 'medium', quality: 'high' },
-    replicateId: 'playgroundai/playground-v2.5-1024px-aesthetic'
-  },
-  {
-    id: 'ideogram',
-    name: 'Ideogram',
-    provider: 'Ideogram AI',
-    description: 'Best-in-class text rendering in images',
-    category: 'image',
-    tags: ['text', 'typography', 'logos'],
-    capabilities: { speed: 'medium', quality: 'high', textRendering: true },
-    replicateId: 'ideogram-ai/ideogram-v2'
-  },
-  {
-    id: 'recraft-v3',
-    name: 'Recraft V3',
-    provider: 'Recraft',
-    description: 'Professional design-focused generation',
-    category: 'image',
-    tags: ['design', 'vectors', 'professional'],
-    capabilities: { speed: 'medium', quality: 'high' },
-    replicateId: 'recraft-ai/recraft-v3'
-  },
-  {
-    id: 'minimax-video',
-    name: 'MiniMax Video',
-    provider: 'MiniMax',
-    description: 'High-quality video generation from text',
-    category: 'video',
-    tags: ['video', 'animation', 'motion'],
+    tags: ['premium', '4K', 'ultra-res'],
     capabilities: { speed: 'slow', quality: 'high' },
-    replicateId: 'minimax/video-01'
+    replicateId: 'google/nano-banana-pro-4k'
+  },
+  {
+    id: 'p-image-edit',
+    name: 'P-Image Edit',
+    provider: 'Replicate',
+    description: 'Budget-friendly image editing and manipulation',
+    category: 'image',
+    tags: ['edit', 'budget', 'manipulation'],
+    capabilities: { speed: 'fast', quality: 'standard' },
+    replicateId: 'replicate/p-image-edit'
+  },
+  {
+    id: 'qwen-image-edit-plus',
+    name: 'Qwen Image Edit Plus',
+    provider: 'Alibaba',
+    description: 'Advanced image editing with instruction following',
+    category: 'image',
+    tags: ['edit', 'instructions', 'manipulation'],
+    capabilities: { speed: 'medium', quality: 'high' },
+    replicateId: 'alibaba/qwen-image-edit-plus'
+  },
+  // === VIDEO MODELS ===
+  {
+    id: 'veo-3.1',
+    name: 'Veo 3.1',
+    provider: 'Google',
+    description: 'Premium video generation with audio support (25¢/s without audio, 50¢/s with audio)',
+    category: 'video',
+    tags: ['premium', 'audio', 'cinematic'],
+    capabilities: { speed: 'slow', quality: 'high' },
+    replicateId: 'google/veo-3.1'
+  },
+  {
+    id: 'veo-3.1-fast',
+    name: 'Veo 3.1 Fast',
+    provider: 'Google',
+    description: 'Faster Veo generation (15¢/s without audio, 25¢/s with audio)',
+    category: 'video',
+    tags: ['fast', 'audio', 'efficient'],
+    capabilities: { speed: 'medium', quality: 'high' },
+    replicateId: 'google/veo-3.1-fast'
+  },
+  {
+    id: 'wan-2.5-t2v',
+    name: 'Wan 2.5 T2V',
+    provider: 'Alibaba',
+    description: 'Text-to-video with resolution pricing (480p: 8¢/s, 720p: 13¢/s, 1080p: 20¢/s)',
+    category: 'video',
+    tags: ['t2v', 'multi-res', 'budget'],
+    capabilities: { speed: 'medium', quality: 'high' },
+    replicateId: 'alibaba/wan-2.5-t2v'
+  },
+  {
+    id: 'wan-2.5-i2v',
+    name: 'Wan 2.5 I2V',
+    provider: 'Alibaba',
+    description: 'Image-to-video generation with resolution pricing',
+    category: 'video',
+    tags: ['i2v', 'multi-res', 'references'],
+    capabilities: { speed: 'medium', quality: 'high' },
+    replicateId: 'alibaba/wan-2.5-i2v'
+  },
+  {
+    id: 'kling-v2.5-turbo-pro',
+    name: 'Kling V2.5 Turbo Pro',
+    provider: 'Kuaishou',
+    description: 'Fast professional video at 15¢/second',
+    category: 'video',
+    tags: ['fast', 'professional', 'turbo'],
+    capabilities: { speed: 'fast', quality: 'high' },
+    replicateId: 'kuaishou/kling-v2.5-turbo-pro'
   },
 ]
 

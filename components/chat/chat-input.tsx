@@ -4,11 +4,12 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { cn } from '@/lib/utils'
 import { Loader2, Image as ImageIcon, X, ImageOff, Wand2, ChevronDown, SendIcon, Paperclip, Zap } from 'lucide-react'
-import { ChatAttachment } from '@/lib/context/chat-context'
+import { ChatAttachment, ImagePurpose, IMAGE_PURPOSE_LABELS } from '@/lib/context/chat-context'
 import { validateImage, createThumbnailUrl, revokeThumbnailUrl } from '@/lib/image-utils'
 import { selectedModelSupportsVision, getSelectedModel } from '@/lib/api-settings'
 import { ModelSelector } from '@/components/ui/model-selector'
 import { ImageSourcePicker } from './image-source-picker'
+import { ImagePurposeModal } from './image-purpose-modal'
 import { useApp } from '@/lib/context/app-context'
 import { useSkills } from '@/lib/context/skills-context'
 import { Skill } from '@/lib/types'
@@ -33,6 +34,10 @@ export function ChatInput({
   const [supportsVision, setSupportsVision] = useState(false)
   const [showModelSelector, setShowModelSelector] = useState(false)
   const [showImagePicker, setShowImagePicker] = useState(false)
+
+  // Image purpose modal state
+  const [showPurposeModal, setShowPurposeModal] = useState(false)
+  const [pendingAttachment, setPendingAttachment] = useState<ChatAttachment | null>(null)
 
   // Skill suggestions state
   const [showSkillSuggestions, setShowSkillSuggestions] = useState(false)
@@ -73,18 +78,20 @@ export function ChatInput({
     }
   }, [])
 
-  // Detect @ for skill suggestions
+  // Detect @ for skill suggestions - show all skills, not just active ones
   const filteredSkills = useCallback(() => {
     if (!showSkillSuggestions) return []
-    const activeSkills = getActiveSkills()
-    if (!skillQuery) return activeSkills.slice(0, 6)
-    return activeSkills
+    if (!skillsState.isLoaded) return []
+    // Use all skills for autocomplete, not just active - users should see all available skills
+    const allSkills = skillsState.skills
+    if (!skillQuery) return allSkills.slice(0, 8)
+    return allSkills
       .filter(s =>
         s.shortcut?.toLowerCase().includes(skillQuery.toLowerCase()) ||
         s.name.toLowerCase().includes(skillQuery.toLowerCase())
       )
-      .slice(0, 6)
-  }, [showSkillSuggestions, skillQuery, getActiveSkills])
+      .slice(0, 8)
+  }, [showSkillSuggestions, skillQuery, skillsState.isLoaded, skillsState.skills])
 
   // Handle input change with @ detection
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -184,29 +191,48 @@ export function ChatInput({
     if (!e.target.files) return
 
     const files = Array.from(e.target.files)
-    const newAttachments: ChatAttachment[] = []
 
     for (const file of files) {
-      if (attachments.length + newAttachments.length >= MAX_IMAGES) break
+      if (attachments.length >= MAX_IMAGES) break
 
       const validation = validateImage(file)
       if (validation.valid) {
         const url = createThumbnailUrl(file)
-        newAttachments.push({
+        const newAttachment: ChatAttachment = {
           id: `att_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
           type: 'image',
           url,
           name: file.name,
           file,
-        })
+        }
+        // Open purpose modal for this attachment
+        setPendingAttachment(newAttachment)
+        setShowPurposeModal(true)
+        setShowImagePicker(false)
+        break // Only handle one at a time for purpose selection
       }
     }
 
-    if (newAttachments.length > 0) {
-      setAttachments(prev => [...prev, ...newAttachments])
-    }
-
     e.target.value = ''
+  }
+
+  // Handle purpose selection from modal
+  const handlePurposeSelected = (purpose: ImagePurpose) => {
+    if (pendingAttachment) {
+      setAttachments(prev => [...prev, { ...pendingAttachment, purpose }])
+      setPendingAttachment(null)
+      setShowPurposeModal(false)
+    }
+  }
+
+  // Handle closing purpose modal without selection (cancel)
+  const handlePurposeModalClose = () => {
+    if (pendingAttachment) {
+      // Clean up the URL if user cancels
+      revokeThumbnailUrl(pendingAttachment.url)
+      setPendingAttachment(null)
+    }
+    setShowPurposeModal(false)
   }
 
   const removeAttachment = (id: string) => {
@@ -224,10 +250,10 @@ export function ChatInput({
   return (
     <div className="p-4">
       <div className="max-w-2xl mx-auto">
-        {/* Glassmorphism Container */}
+        {/* Glassmorphism Container - NOTE: overflow-visible needed for skill dropdown to appear above */}
         <motion.div
           className={cn(
-            "relative backdrop-blur-2xl bg-white/[0.02] rounded-2xl border shadow-2xl overflow-hidden transition-all duration-300",
+            "relative backdrop-blur-2xl bg-white/[0.02] rounded-2xl border shadow-2xl transition-all duration-300",
             isFocused
               ? "border-white/[0.1] shadow-skinny-yellow/5"
               : "border-white/[0.05]"
@@ -258,6 +284,12 @@ export function ChatInput({
                           className="w-full h-full object-cover"
                         />
                       </div>
+                      {/* Purpose Badge */}
+                      {attachment.purpose && (
+                        <span className="absolute bottom-0 left-0 right-0 text-[8px] bg-black/80 text-white/90 px-1 py-0.5 text-center truncate">
+                          {IMAGE_PURPOSE_LABELS[attachment.purpose]}
+                        </span>
+                      )}
                       <button
                         onClick={() => removeAttachment(attachment.id)}
                         className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-lg"
@@ -294,50 +326,100 @@ export function ChatInput({
               style={{ minHeight: '60px', maxHeight: '200px' }}
             />
 
-            {/* Skill Suggestions Dropdown */}
+            {/* Skill Suggestions Dropdown - Enhanced with Rich Previews */}
             <AnimatePresence>
               {showSkillSuggestions && filteredSkills().length > 0 && (
                 <motion.div
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: 10 }}
-                  className="absolute bottom-full left-4 right-4 mb-2 bg-zinc-900 border border-white/[0.1] rounded-xl shadow-2xl overflow-hidden z-50"
+                  className="absolute bottom-full left-4 right-4 mb-2 bg-zinc-900/95 backdrop-blur-xl border border-white/[0.1] rounded-xl shadow-2xl overflow-hidden z-50"
                 >
-                  <div className="px-3 py-2 border-b border-white/[0.05]">
+                  <div className="px-3 py-2 border-b border-white/[0.05] flex items-center justify-between">
                     <span className="text-[10px] text-white/40 uppercase tracking-wider">Skills</span>
+                    <span className="text-[10px] text-white/30">Type to filter</span>
                   </div>
-                  <div className="max-h-64 overflow-y-auto">
-                    {filteredSkills().map((skill, index) => (
-                      <button
-                        key={skill.id}
-                        onClick={() => insertSkill(skill)}
-                        className={cn(
-                          "w-full px-3 py-2.5 flex items-center gap-3 text-left transition-colors",
-                          index === selectedSkillIndex
-                            ? "bg-skinny-yellow/10"
-                            : "hover:bg-white/[0.03]"
-                        )}
-                      >
-                        <span className="text-lg flex-shrink-0">{skill.icon || '📌'}</span>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className={cn(
-                              "text-sm font-medium truncate",
-                              index === selectedSkillIndex ? "text-skinny-yellow" : "text-white"
-                            )}>
-                              {skill.name}
-                            </span>
-                            <code className="px-1.5 py-0.5 rounded bg-white/[0.05] text-skinny-yellow text-[10px] font-mono">
-                              @{skill.shortcut}
-                            </code>
+                  <div className="max-h-80 overflow-y-auto">
+                    {filteredSkills().map((skill, index) => {
+                      // Extract first 2-3 key points from content for preview
+                      const contentLines = skill.content?.split('\n').filter(line => line.trim()).slice(0, 3) || []
+
+                      return (
+                        <button
+                          key={skill.id}
+                          onClick={() => insertSkill(skill)}
+                          className={cn(
+                            "w-full px-3 py-3 flex items-start gap-3 text-left transition-all duration-150 border-b border-white/[0.03] last:border-b-0",
+                            index === selectedSkillIndex
+                              ? "bg-skinny-yellow/10"
+                              : "hover:bg-white/[0.03]"
+                          )}
+                        >
+                          <span className="text-xl flex-shrink-0 mt-0.5">{skill.icon || '📌'}</span>
+                          <div className="flex-1 min-w-0">
+                            {/* Header row */}
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className={cn(
+                                "text-sm font-medium",
+                                index === selectedSkillIndex ? "text-skinny-yellow" : "text-white"
+                              )}>
+                                {skill.name}
+                              </span>
+                              <code className="px-1.5 py-0.5 rounded bg-white/[0.05] text-skinny-yellow text-[10px] font-mono">
+                                @{skill.shortcut}
+                              </code>
+                              {skill.category && (
+                                <span className="px-1.5 py-0.5 rounded bg-white/[0.03] text-white/30 text-[9px] uppercase">
+                                  {skill.category}
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Description */}
+                            <p className="text-[11px] text-white/50 mb-2">{skill.description}</p>
+
+                            {/* Content preview - key techniques */}
+                            {contentLines.length > 0 && (
+                              <div className="space-y-0.5 mb-2">
+                                {contentLines.map((line, i) => {
+                                  const cleanLine = line.replace(/^[-•*#]\s*/, '').trim()
+                                  if (!cleanLine || cleanLine.length > 60) return null
+                                  return (
+                                    <p key={i} className="text-[10px] text-white/30 truncate">
+                                      • {cleanLine.slice(0, 50)}{cleanLine.length > 50 ? '...' : ''}
+                                    </p>
+                                  )
+                                })}
+                              </div>
+                            )}
+
+                            {/* Footer with usage stats */}
+                            <div className="flex items-center gap-3 text-[9px] text-white/25">
+                              {skill.usageCount > 0 && (
+                                <span>Used {skill.usageCount}x</span>
+                              )}
+                              {skill.tags?.length > 0 && (
+                                <span className="truncate">{skill.tags.slice(0, 3).join(' • ')}</span>
+                              )}
+                            </div>
                           </div>
-                          <p className="text-[11px] text-white/40 truncate">{skill.description}</p>
-                        </div>
-                        {index === selectedSkillIndex && (
-                          <kbd className="text-[10px] text-white/30 px-1.5 py-0.5 rounded bg-white/[0.05]">Tab</kbd>
-                        )}
-                      </button>
-                    ))}
+
+                          {/* Tab hint for selected */}
+                          {index === selectedSkillIndex && (
+                            <div className="flex-shrink-0 self-center">
+                              <kbd className="text-[10px] text-white/30 px-1.5 py-0.5 rounded bg-white/[0.05]">Tab</kbd>
+                            </div>
+                          )}
+                        </button>
+                      )
+                    })}
+                  </div>
+
+                  {/* Footer hint */}
+                  <div className="px-3 py-2 border-t border-white/[0.05] bg-white/[0.02]">
+                    <p className="text-[10px] text-white/30">
+                      <kbd className="text-white/40">↑↓</kbd> navigate • <kbd className="text-white/40">Tab</kbd> select • Skills inject prompt guidance
+                    </p>
                   </div>
                 </motion.div>
               )}
@@ -448,10 +530,22 @@ export function ChatInput({
         onSelectLocalFile={() => fileInputRef.current?.click()}
         onSelectImage={(attachment) => {
           if (attachments.length < MAX_IMAGES) {
-            setAttachments(prev => [...prev, attachment])
+            // Open purpose modal for hub images too
+            setPendingAttachment(attachment)
+            setShowPurposeModal(true)
+            setShowImagePicker(false)
           }
         }}
         supportsVision={supportsVision}
+      />
+
+      {/* Image Purpose Modal */}
+      <ImagePurposeModal
+        isOpen={showPurposeModal}
+        onClose={handlePurposeModalClose}
+        onSelect={handlePurposeSelected}
+        imageUrl={pendingAttachment?.url || ''}
+        imageName={pendingAttachment?.name || ''}
       />
     </div>
   )

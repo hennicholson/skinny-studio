@@ -112,6 +112,19 @@ function skillsReducer(state: SkillsState, action: SkillsAction): SkillsState {
   }
 }
 
+// Intent-to-skill mapping for AI suggestions
+const INTENT_SKILL_MAP: Record<string, string[]> = {
+  video: ['cinematic', 'veo', 'motion', 'animation'],
+  cinematic: ['cinematic', 'veo', 'motion'],
+  product: ['product-photo', 'product', 'ecommerce', 'commercial'],
+  portrait: ['portrait', 'headshot', 'face', 'character'],
+  social: ['social', 'instagram', 'tiktok', 'reels'],
+  text: ['text', 'typography', 'logo'],
+  anime: ['anime', 'manga', 'illustration'],
+  landscape: ['landscape', 'nature', 'scenic'],
+  abstract: ['abstract', 'artistic', 'creative'],
+}
+
 interface SkillsContextValue {
   state: SkillsState
   // CRUD operations
@@ -126,6 +139,9 @@ interface SkillsContextValue {
   getActiveSkills: () => Skill[]
   getSkillsByCategory: (category: SkillCategory) => Skill[]
   searchSkills: (query: string) => Skill[]
+  // Intent-based skill discovery
+  getSkillsByIntent: (intent: string) => Skill[]
+  getSkillExplanation: (shortcut: string) => string | null
   // For chat integration
   parseSkillReferences: (text: string) => { text: string; skills: Skill[] }
   getSkillsContext: () => string  // Returns formatted skills for system prompt
@@ -225,6 +241,59 @@ export function SkillsProvider({ children }: { children: ReactNode }) {
     )
   }, [state.skills])
 
+  // Get skills relevant to a user intent (e.g., "video", "product", "portrait")
+  const getSkillsByIntent = useCallback((intent: string): Skill[] => {
+    const lowerIntent = intent.toLowerCase()
+
+    // Get relevant keywords for this intent
+    const keywords = INTENT_SKILL_MAP[lowerIntent] || [lowerIntent]
+
+    // Find active skills that match any of these keywords
+    return state.skills.filter(skill => {
+      if (!skill.isActive) return false
+
+      // Check shortcut match
+      if (keywords.some(k => skill.shortcut?.toLowerCase().includes(k))) return true
+
+      // Check name match
+      if (keywords.some(k => skill.name.toLowerCase().includes(k))) return true
+
+      // Check tags match
+      if (skill.tags.some(tag => keywords.some(k => tag.toLowerCase().includes(k)))) return true
+
+      // Check description match (less strict)
+      if (keywords.some(k => skill.description.toLowerCase().includes(k))) return true
+
+      return false
+    })
+  }, [state.skills])
+
+  // Get a formatted explanation of a skill for display or AI response
+  const getSkillExplanation = useCallback((shortcut: string): string | null => {
+    const skill = state.skills.find(s => s.shortcut === shortcut)
+    if (!skill) return null
+
+    // Extract first 3-5 bullet points or lines from content
+    const contentLines = skill.content.split('\n').filter(line => line.trim())
+    const keyPoints = contentLines.slice(0, 5)
+
+    let explanation = `**@${skill.shortcut}** - ${skill.description}\n\n`
+    explanation += `Key techniques:\n`
+    keyPoints.forEach(point => {
+      // Clean up the point formatting
+      const cleanPoint = point.replace(/^[-•*]\s*/, '').trim()
+      if (cleanPoint) {
+        explanation += `- ${cleanPoint}\n`
+      }
+    })
+
+    if (skill.examples && skill.examples.length > 0) {
+      explanation += `\nExample: \`${skill.examples[0]}\``
+    }
+
+    return explanation
+  }, [state.skills])
+
   // Parse @skill references in text and return the skills found
   const parseSkillReferences = useCallback((text: string) => {
     const skillRegex = /@([\w-]+)/g
@@ -272,6 +341,8 @@ export function SkillsProvider({ children }: { children: ReactNode }) {
     getActiveSkills,
     getSkillsByCategory,
     searchSkills,
+    getSkillsByIntent,
+    getSkillExplanation,
     parseSkillReferences,
     getSkillsContext,
   }

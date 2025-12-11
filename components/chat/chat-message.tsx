@@ -10,10 +10,88 @@ import Image from 'next/image'
 import ReactMarkdown from 'react-markdown'
 import { useGeneration, Generation } from '@/lib/context/generation-context'
 import { useApp } from '@/lib/context/app-context'
+import { useSkills } from '@/lib/context/skills-context'
+import { Skill } from '@/lib/types'
 
 // Strip generation blocks from display text
 function stripGenerationBlock(text: string): string {
   return text.replace(/```generate\s*\n[\s\S]*?\n```/g, '').trim()
+}
+
+// Skill mention component with hover tooltip
+function SkillMention({ shortcut, skill }: { shortcut: string; skill?: Skill }) {
+  const [showTooltip, setShowTooltip] = useState(false)
+
+  if (!skill) {
+    // Skill not found - just show as text
+    return <span className="text-skinny-yellow">@{shortcut}</span>
+  }
+
+  return (
+    <span
+      className="relative inline-block"
+      onMouseEnter={() => setShowTooltip(true)}
+      onMouseLeave={() => setShowTooltip(false)}
+    >
+      <span className="text-skinny-yellow cursor-help hover:underline decoration-skinny-yellow/50">
+        @{shortcut}
+      </span>
+
+      {/* Tooltip */}
+      {showTooltip && (
+        <div className="absolute bottom-full left-0 mb-2 w-64 p-3 bg-zinc-900/95 backdrop-blur-xl border border-white/[0.1] rounded-lg shadow-2xl z-50">
+          <div className="flex items-start gap-2 mb-2">
+            <span className="text-lg">{skill.icon || '📌'}</span>
+            <div>
+              <div className="text-sm font-medium text-white">{skill.name}</div>
+              <div className="text-[10px] text-white/40">{skill.category}</div>
+            </div>
+          </div>
+          <p className="text-[11px] text-white/60 mb-2">{skill.description}</p>
+          {skill.content && (
+            <div className="space-y-0.5">
+              {skill.content.split('\n').filter(l => l.trim()).slice(0, 3).map((line, i) => (
+                <p key={i} className="text-[10px] text-white/40 truncate">
+                  • {line.replace(/^[-•*#]\s*/, '').trim().slice(0, 40)}...
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </span>
+  )
+}
+
+// Render text with skill highlighting
+function renderWithSkillHighlights(content: string, skills: Skill[]): React.ReactNode[] {
+  const parts: React.ReactNode[] = []
+  const regex = /@([\w-]+)/g
+  let lastIndex = 0
+  let match
+
+  while ((match = regex.exec(content)) !== null) {
+    // Add text before match
+    if (match.index > lastIndex) {
+      parts.push(content.slice(lastIndex, match.index))
+    }
+
+    const shortcut = match[1]
+    const skill = skills.find(s => s.shortcut === shortcut)
+
+    parts.push(
+      <SkillMention key={match.index} shortcut={shortcut} skill={skill} />
+    )
+
+    lastIndex = regex.lastIndex
+  }
+
+  // Add remaining text
+  if (lastIndex < content.length) {
+    parts.push(content.slice(lastIndex))
+  }
+
+  return parts
 }
 
 interface ChatMessageProps {
@@ -240,6 +318,10 @@ export const ChatMessage = memo(function ChatMessage({ message }: ChatMessagePro
   const isUser = message.role === 'user'
   const isAssistant = message.role === 'assistant'
 
+  // Get skills for highlighting
+  const { state: skillsState } = useSkills()
+  const allSkills = skillsState.skills
+
   // Strip generation blocks from display content (only for assistant messages)
   const displayContent = useMemo(() => {
     if (isAssistant && message.content) {
@@ -247,6 +329,11 @@ export const ChatMessage = memo(function ChatMessage({ message }: ChatMessagePro
     }
     return message.content
   }, [message.content, isAssistant])
+
+  // Check if content contains @mentions worth highlighting
+  const hasSkillMentions = useMemo(() => {
+    return displayContent && /@[\w-]+/.test(displayContent)
+  }, [displayContent])
 
   const copyContent = useCallback(async () => {
     try {
@@ -304,7 +391,34 @@ export const ChatMessage = memo(function ChatMessage({ message }: ChatMessagePro
                 ? "prose-p:text-white prose-strong:text-skinny-yellow prose-em:text-white/80"
                 : "prose-invert prose-strong:text-skinny-yellow prose-strong:font-semibold prose-em:text-white/70 prose-code:text-skinny-yellow prose-code:bg-white/[0.05] prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-pre:bg-white/[0.03] prose-pre:border prose-pre:border-white/[0.08] prose-ul:my-2 prose-li:my-0.5 prose-headings:text-white prose-headings:font-medium"
             )}>
-              <ReactMarkdown>
+              <ReactMarkdown
+                components={{
+                  // Custom text renderer to highlight @skill mentions
+                  p: ({ children, ...props }) => {
+                    // Process children to find and highlight @mentions
+                    const processChildren = (child: React.ReactNode): React.ReactNode => {
+                      if (typeof child === 'string' && /@[\w-]+/.test(child)) {
+                        return renderWithSkillHighlights(child, allSkills)
+                      }
+                      if (Array.isArray(child)) {
+                        return child.map((c, i) => <span key={i}>{processChildren(c)}</span>)
+                      }
+                      return child
+                    }
+                    return <p {...props}>{processChildren(children)}</p>
+                  },
+                  // Also handle text in list items
+                  li: ({ children, ...props }) => {
+                    const processChildren = (child: React.ReactNode): React.ReactNode => {
+                      if (typeof child === 'string' && /@[\w-]+/.test(child)) {
+                        return renderWithSkillHighlights(child, allSkills)
+                      }
+                      return child
+                    }
+                    return <li {...props}>{processChildren(children)}</li>
+                  },
+                }}
+              >
                 {displayContent}
               </ReactMarkdown>
               {message.isStreaming && (

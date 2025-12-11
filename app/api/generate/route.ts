@@ -7,13 +7,60 @@ import { v4 as uuidv4 } from 'uuid'
 export const runtime = 'nodejs'
 export const maxDuration = 300 // 5 minutes for generation
 
+// Image purpose types - must match frontend
+type ImagePurpose = 'reference' | 'starting_frame' | 'edit_target' | 'last_frame'
+
+interface ImageWithPurpose {
+  url: string
+  purpose: ImagePurpose
+}
+
 interface GenerateRequest {
   model: string
   prompt: string
   params?: Record<string, any>
-  referenceImages?: string[]
+  referenceImages?: string[] // Legacy support - treated as 'reference' purpose
+  images?: ImageWithPurpose[] // New format with purpose metadata
   conversationId?: string
   messageId?: string
+  // Video-specific params
+  duration?: number
+  resolution?: string
+  generateAudio?: boolean // For Veo models - controls audio generation and pricing
+}
+
+// Calculate cost for video models (per-second pricing)
+// Handles: resolution multipliers (Wan 2.5), audio toggle pricing (Veo 3.1)
+function calculateVideoCost(
+  studioModel: any,
+  duration: number,
+  resolution: string,
+  generateAudio?: boolean
+): number {
+  if (studioModel.pricing_type !== 'per_second') {
+    return studioModel.cost_per_run_cents || 0
+  }
+
+  let baseCostPerSecond = studioModel.cost_per_second_cents || 0
+
+  // Check for audio-based pricing in parameter_schema (Veo models)
+  const paramSchema = studioModel.parameter_schema || {}
+  const audioParam = paramSchema.generate_audio
+
+  if (audioParam?.pricing) {
+    // Veo models have different pricing based on audio toggle
+    // Default to audio ON if not explicitly set to false
+    const hasAudio = generateAudio !== false
+    baseCostPerSecond = hasAudio
+      ? audioParam.pricing.with_audio_cents_per_second
+      : audioParam.pricing.without_audio_cents_per_second
+  }
+
+  // Apply resolution multiplier (for Wan 2.5 models)
+  const multipliers = studioModel.resolution_multipliers || {}
+  const resolutionMultiplier = multipliers[resolution] || 1.0
+
+  return Math.ceil(baseCostPerSecond * duration * resolutionMultiplier)
 }
 
 // Initialize Replicate with API key
@@ -132,7 +179,7 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json() as GenerateRequest
-    const { model, prompt, params = {}, referenceImages, conversationId, messageId } = body
+    const { model, prompt, params = {}, referenceImages, images, conversationId, messageId, duration, resolution, generateAudio } = body
 
     if (!prompt) {
       return NextResponse.json({ error: 'Prompt is required' }, { status: 400 })
@@ -150,7 +197,45 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: `Model not found: ${model}` }, { status: 400 })
     }
 
-    const costCents = studioModel.cost_per_run_cents || 0
+    // Calculate cost based on pricing type
+    let costCents = 0
+    let effectiveDuration = duration
+    let effectiveResolution = resolution
+    let effectiveGenerateAudio = generateAudio
+
+    if (studioModel.pricing_type === 'per_second') {
+      // Video model - calculate based on duration, resolution, and audio
+      const paramSchema = studioModel.parameter_schema || {}
+      const durationParam = paramSchema.duration
+      const resolutionParam = paramSchema.resolution
+      const audioParam = paramSchema.generate_audio
+
+      // Get options from parameter_schema or fall back to legacy fields
+      const durationOptions = durationParam?.options || studioModel.duration_options || [5]
+      const resolutionOptions = resolutionParam?.options || studioModel.resolution_options || ['720p']
+
+      // Use provided values or defaults from parameter_schema
+      effectiveDuration = duration ?? durationParam?.default ?? durationOptions[0]
+      effectiveResolution = resolution ?? resolutionParam?.default ?? resolutionOptions[0]
+
+      // Default audio to true for Veo models (as per their parameter_schema)
+      effectiveGenerateAudio = generateAudio ?? audioParam?.default ?? true
+
+      // Validate duration is in allowed options
+      if (!durationOptions.includes(effectiveDuration)) {
+        effectiveDuration = durationOptions[0]
+      }
+
+      // Validate resolution is in allowed options
+      if (!resolutionOptions.includes(effectiveResolution)) {
+        effectiveResolution = resolutionOptions[0]
+      }
+
+      costCents = calculateVideoCost(studioModel, effectiveDuration as number, effectiveResolution as string, effectiveGenerateAudio)
+    } else {
+      // Image model - flat rate
+      costCents = studioModel.cost_per_run_cents || 0
+    }
 
     // === BALANCE CHECK (skip for lifetime users or free models) ===
     if (whopUserId && !hasLifetimeAccess && costCents > 0 && balanceCents < costCents) {
@@ -174,15 +259,123 @@ export async function POST(request: Request) {
       ...params,
     }
 
-    // Handle reference images based on model type
-    if (referenceImages?.length) {
-      // Different models expect different parameter names for images
-      if (model.includes('flux')) {
-        input.input_images = referenceImages
-      } else if (model.includes('seedream') || model.includes('nano')) {
-        input.image_input = referenceImages
-      } else {
-        input.image = referenceImages[0]
+    // Handle video-specific parameters
+    if (studioModel.pricing_type === 'per_second') {
+      // Set duration and resolution for video models
+      if (effectiveDuration) input.duration = effectiveDuration
+      if (effectiveResolution) input.resolution = effectiveResolution
+
+      // Set generate_audio for Veo models
+      if (model.startsWith('veo-')) {
+        input.generate_audio = effectiveGenerateAudio
+      }
+    }
+
+    // Handle images with purpose-aware parameter mapping
+    // Supports both new format (images with purpose) and legacy format (referenceImages)
+    const processedImages = images?.length
+      ? images
+      : referenceImages?.map(url => ({ url, purpose: 'reference' as ImagePurpose })) || []
+
+    if (processedImages.length > 0) {
+      // Group images by purpose
+      const byPurpose: Record<ImagePurpose, string[]> = {
+        reference: [],
+        starting_frame: [],
+        edit_target: [],
+        last_frame: [],
+      }
+
+      for (const img of processedImages) {
+        byPurpose[img.purpose].push(img.url)
+      }
+
+      // ===== REFERENCE IMAGES (ingredients, style guides) =====
+      // Based on actual Replicate API documentation for each model
+      if (byPurpose.reference.length > 0) {
+        // FLUX 2 Pro/Dev: input_images (array, max 8)
+        if (model === 'flux-2-pro' || model === 'flux-2-dev') {
+          input.input_images = byPurpose.reference
+        }
+        // Seedream 4.5: image_input (array, 1-14 images)
+        else if (model === 'seedream-4.5') {
+          input.image_input = byPurpose.reference
+        }
+        // Nano Banana / Nano Banana Pro: image_input (array)
+        else if (model === 'nano-banana' || model === 'nano-banana-pro' || model === 'nano-banana-pro-4k') {
+          input.image_input = byPurpose.reference
+        }
+        // Veo 3.1: reference_images (array, 1-3 images) - for R2V mode
+        else if (model === 'veo-3.1' || model === 'veo-3.1-fast') {
+          input.reference_images = byPurpose.reference
+        }
+        // P-Image-Edit: images (array) - can also be used as reference
+        else if (model === 'p-image-edit') {
+          input.images = byPurpose.reference
+        }
+        // Qwen Image Edit Plus: image (array) - can also be used as reference
+        else if (model === 'qwen-image-edit-plus') {
+          input.image = byPurpose.reference
+        }
+        // Generic fallback
+        else {
+          input.reference_images = byPurpose.reference
+        }
+      }
+
+      // ===== STARTING FRAME (first frame for video generation) =====
+      if (byPurpose.starting_frame.length > 0) {
+        const startFrame = byPurpose.starting_frame[0]
+
+        // Wan 2.5 I2V: image (required, single URI)
+        if (model === 'wan-2.5-i2v') {
+          input.image = startFrame
+        }
+        // Kling V2.5: start_image (single URI) - note: "image" is deprecated
+        else if (model === 'kling-v2.5-turbo-pro') {
+          input.start_image = startFrame
+        }
+        // Hailuo 2.3 (MiniMax): first_frame_image (single URI)
+        else if (model === 'hailuo-2.3') {
+          input.first_frame_image = startFrame
+        }
+        // Veo 3.1: image (single URI) - for I2V mode
+        else if (model === 'veo-3.1' || model === 'veo-3.1-fast') {
+          input.image = startFrame
+        }
+        // Generic fallback for other video models
+        else {
+          input.image = startFrame
+        }
+      }
+
+      // ===== EDIT TARGET (image to modify/edit) =====
+      if (byPurpose.edit_target.length > 0) {
+        // P-Image-Edit: images (array of URIs)
+        // "For editing task, provide the main image as the first image"
+        if (model === 'p-image-edit') {
+          input.images = byPurpose.edit_target
+        }
+        // Qwen Image Edit Plus: image (array of URIs)
+        else if (model === 'qwen-image-edit-plus') {
+          input.image = byPurpose.edit_target
+        }
+        // Generic edit fallback
+        else {
+          input.images = byPurpose.edit_target
+        }
+      }
+
+      // ===== LAST FRAME (end frame for video interpolation) =====
+      if (byPurpose.last_frame.length > 0) {
+        // Veo 3.1: last_frame (single URI) - creates transition between start and end
+        if (model === 'veo-3.1' || model === 'veo-3.1-fast') {
+          input.last_frame = byPurpose.last_frame[0]
+        }
+        // Generic fallback for other models that might support end frames
+        else {
+          input.end_image = byPurpose.last_frame[0]
+        }
       }
     }
 
@@ -284,19 +477,48 @@ export async function POST(request: Request) {
       if (deductError) {
         console.error("Failed to deduct balance:", deductError)
       }
+    }
 
-      // Log the credit transaction
-      await sbAdmin.from("credit_transactions").insert({
+    // === LOG TRANSACTION FOR ALL USERS (including lifetime) ===
+    // This ensures all users see their generation history in spending log
+    if (whopUserId) {
+      const effectiveCost = hasLifetimeAccess ? 0 : costCents
+
+      const { error: txError } = await sbAdmin.from("credit_transactions").insert({
         user_id: whopUserId,
         type: "usage",
-        amount: -costCents,
-        amount_charged: costCents,
+        amount: -effectiveCost,
+        amount_charged: effectiveCost,
         app_name: "Skinny Studio",
-        task: "generate",
+        task: studioModel.category === 'video' ? 'video_generation' : 'image_generation',
         status: "completed",
         preview: imageUrl,
-        metadata: { model, prompt, params },
+        metadata: {
+          model,
+          model_name: studioModel.name,
+          prompt,
+          params,
+          category: studioModel.category,
+          pricing_type: studioModel.pricing_type,
+          is_lifetime_user: hasLifetimeAccess,
+          // Video-specific pricing breakdown
+          ...(studioModel.pricing_type === 'per_second' && {
+            duration: effectiveDuration,
+            resolution: effectiveResolution,
+            cost_per_second_cents: studioModel.cost_per_second_cents,
+            resolution_multiplier: studioModel.resolution_multipliers?.[effectiveResolution as string] || 1.0,
+            // Veo audio pricing info
+            ...(model.startsWith('veo-') && {
+              generate_audio: effectiveGenerateAudio,
+              audio_pricing: studioModel.parameter_schema?.generate_audio?.pricing,
+            }),
+          }),
+        },
       })
+
+      if (txError) {
+        console.error("Failed to log credit transaction:", txError)
+      }
     }
 
     return NextResponse.json({
@@ -304,10 +526,25 @@ export async function POST(request: Request) {
       imageUrl,
       outputUrls: finalOutputUrls,
       model: studioModel.name,
+      modelSlug: model,
+      category: studioModel.category,
       prompt,
       cost: costCents,
       generationId,
       newBalance: hasLifetimeAccess ? balanceCents : balanceCents - costCents,
+      // Video-specific pricing breakdown
+      ...(studioModel.pricing_type === 'per_second' && {
+        pricingBreakdown: {
+          duration: effectiveDuration,
+          resolution: effectiveResolution,
+          costPerSecond: studioModel.cost_per_second_cents,
+          resolutionMultiplier: studioModel.resolution_multipliers?.[effectiveResolution as string] || 1.0,
+          // Veo audio info
+          ...(model.startsWith('veo-') && {
+            generateAudio: effectiveGenerateAudio,
+          }),
+        }
+      }),
     })
 
   } catch (error) {
