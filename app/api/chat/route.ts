@@ -348,7 +348,11 @@ export async function POST(request: Request) {
                   purpose: att.purpose || 'reference',  // Default to reference if no purpose set
                 })) || []
 
-              const genResponse = await fetch(new URL('/api/generate', request.url).href, {
+              console.log('[Chat] Calling generate API for model:', genBlock.model)
+              const generateUrl = new URL('/api/generate', request.url).href
+              console.log('[Chat] Generate URL:', generateUrl)
+
+              const genResponse = await fetch(generateUrl, {
                 method: 'POST',
                 headers: forwardHeaders,
                 body: JSON.stringify({
@@ -363,9 +367,20 @@ export async function POST(request: Request) {
                 }),
               })
 
-              const genResult = await genResponse.json()
+              console.log('[Chat] Generate response status:', genResponse.status, genResponse.statusText)
+              const genResultText = await genResponse.text()
+              console.log('[Chat] Generate response text (first 500 chars):', genResultText.slice(0, 500))
+
+              let genResult: any
+              try {
+                genResult = JSON.parse(genResultText)
+              } catch (parseError) {
+                console.error('[Chat] Failed to parse generate response:', parseError)
+                throw new Error(`Generate API returned invalid JSON: ${genResultText.slice(0, 200)}`)
+              }
 
               if (genResult.success && genResult.imageUrl) {
+                console.log('[Chat] Generation successful! imageUrl:', genResult.imageUrl)
                 // Send complete status with result
                 const completeData = JSON.stringify({
                   generation: {
@@ -378,8 +393,11 @@ export async function POST(request: Request) {
                     }
                   }
                 })
+                console.log('[Chat] Sending complete data to stream')
                 controller.enqueue(encoder.encode(`data: ${completeData}\n\n`))
+                console.log('[Chat] Complete data sent')
               } else {
+                console.log('[Chat] Generation failed:', genResult.error || 'Unknown error')
                 // Send error status
                 const errorData = JSON.stringify({
                   generation: {
