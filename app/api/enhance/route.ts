@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
-import { enhancePrompt } from '@/lib/replicate'
+
+export const runtime = 'edge'
 
 export async function POST(request: Request) {
   try {
@@ -13,9 +14,13 @@ export async function POST(request: Request) {
       )
     }
 
-    const result = await enhancePrompt(prompt, style)
-
-    return NextResponse.json(result)
+    // Enhancement is now handled by the orchestrator AI
+    // This route is kept for backwards compatibility
+    return NextResponse.json({
+      enhanced: prompt,
+      original: prompt,
+      style: style || 'default'
+    })
   } catch (error) {
     console.error('Error enhancing prompt:', error)
 

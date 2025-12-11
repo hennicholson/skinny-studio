@@ -1,15 +1,31 @@
 import { NextResponse } from 'next/server'
-import { sbAdmin } from '@/lib/supabaseAdmin'
-import { v4 as uuidv4 } from 'uuid'
+import { createClient } from '@supabase/supabase-js'
 
-export const runtime = 'nodejs'
+export const runtime = 'edge'
 
 // Max file size: 10MB
 const MAX_FILE_SIZE = 10 * 1024 * 1024
 const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
 
+// Generate a simple UUID for edge runtime (no crypto.randomUUID on all platforms)
+function generateId(): string {
+  return Date.now().toString(36) + Math.random().toString(36).substring(2, 15)
+}
+
 export async function POST(request: Request) {
   try {
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+
+    if (!supabaseUrl || !supabaseServiceKey) {
+      return NextResponse.json(
+        { error: 'Storage not configured' },
+        { status: 500 }
+      )
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseServiceKey)
+
     const formData = await request.formData()
     const file = formData.get('file') as File | null
 
@@ -35,17 +51,16 @@ export async function POST(request: Request) {
 
     // Generate unique filename
     const ext = file.name.split('.').pop() || 'jpg'
-    const filename = `${uuidv4()}.${ext}`
+    const filename = `${generateId()}.${ext}`
     const path = `references/${filename}`
 
-    // Convert File to ArrayBuffer then Buffer
+    // Convert File to ArrayBuffer
     const arrayBuffer = await file.arrayBuffer()
-    const buffer = Buffer.from(arrayBuffer)
 
     // Upload to Supabase storage
-    const { data, error } = await sbAdmin.storage
+    const { data, error } = await supabase.storage
       .from('training-images')
-      .upload(path, buffer, {
+      .upload(path, arrayBuffer, {
         contentType: file.type,
         upsert: false,
       })
@@ -59,7 +74,7 @@ export async function POST(request: Request) {
     }
 
     // Get public URL
-    const { data: urlData } = sbAdmin.storage
+    const { data: urlData } = supabase.storage
       .from('training-images')
       .getPublicUrl(path)
 
