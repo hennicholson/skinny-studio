@@ -411,33 +411,76 @@ export async function POST(request: Request) {
       { input }
     )
 
-    // Handle different output formats
+    // Handle different output formats from Replicate
+    // Replicate SDK can return:
+    // - Array of strings (URLs)
+    // - Array of FileOutput objects (with .url(), .href, or toString())
+    // - Single string URL
+    // - Single FileOutput object
+    // - Object with output property
     let outputUrls: string[] = []
+
+    console.log('Replicate output type:', typeof output, Array.isArray(output) ? 'array' : '')
+    console.log('Replicate output:', JSON.stringify(output, null, 2).slice(0, 500))
+
+    // Helper to extract URL from various formats
+    const extractUrl = (item: any): string | null => {
+      if (!item) return null
+
+      // Direct string
+      if (typeof item === 'string') return item
+
+      // FileOutput with url() method
+      if (typeof item.url === 'function') {
+        try { return item.url() } catch { }
+      }
+
+      // FileOutput with href property
+      if (typeof item.href === 'string') return item.href
+
+      // Object with url property
+      if (typeof item.url === 'string') return item.url
+
+      // toString() method (FileOutput objects support this)
+      if (typeof item.toString === 'function' && item.toString !== Object.prototype.toString) {
+        const str = item.toString()
+        if (str.startsWith('http')) return str
+      }
+
+      return null
+    }
 
     if (Array.isArray(output)) {
       for (const item of output) {
-        if (typeof item === 'string') {
-          outputUrls.push(item)
-        } else if (item && typeof item === 'object') {
-          if ('url' in item && typeof item.url === 'function') {
-            outputUrls.push(item.url())
-          } else if ('url' in item) {
-            outputUrls.push(item.url as string)
-          }
-        }
+        const url = extractUrl(item)
+        if (url) outputUrls.push(url)
       }
-    } else if (typeof output === 'string') {
-      outputUrls.push(output)
-    } else if (output && typeof output === 'object') {
-      if ('url' in output && typeof (output as any).url === 'function') {
-        outputUrls.push((output as any).url())
-      } else if ('url' in output) {
-        outputUrls.push((output as any).url)
+    } else {
+      const url = extractUrl(output)
+      if (url) outputUrls.push(url)
+    }
+
+    // If still no URLs, check if output has nested structure
+    if (outputUrls.length === 0 && output && typeof output === 'object') {
+      // Some models return { output: [...] } or similar
+      const outputObj = output as Record<string, any>
+      for (const key of ['output', 'images', 'video', 'result']) {
+        if (outputObj[key]) {
+          const nested = Array.isArray(outputObj[key]) ? outputObj[key] : [outputObj[key]]
+          for (const item of nested) {
+            const url = extractUrl(item)
+            if (url) outputUrls.push(url)
+          }
+          if (outputUrls.length > 0) break
+        }
       }
     }
 
+    console.log('Extracted URLs:', outputUrls)
+
     if (outputUrls.length === 0) {
-      throw new Error('No output from model')
+      console.error('Failed to extract URLs from output:', output)
+      throw new Error('No output from model - could not extract URLs')
     }
 
     // === SAVE IMAGES TO SUPABASE STORAGE ===
