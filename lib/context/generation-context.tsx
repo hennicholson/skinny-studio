@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useContext, useState, useCallback, ReactNode, useEffect } from 'react'
+import { createContext, useContext, useState, useCallback, ReactNode, useEffect, useMemo } from 'react'
 import { useUser } from './user-context'
 
 // ============================================
@@ -171,8 +171,16 @@ export function GenerationProvider({ children }: { children: ReactNode }) {
     setAttachedImages([])
   }, [])
 
-  // All generations for gallery (just user's real generations, no mock data)
-  const allGenerations = generations
+  // All generations for gallery - filter to only show completed ones with actual images
+  // This is a safety filter in case the API returns pending generations
+  const allGenerations = useMemo(() =>
+    generations.filter(g =>
+      g.replicate_status === 'succeeded' &&
+      g.output_urls &&
+      g.output_urls.length > 0
+    ),
+    [generations]
+  )
 
   const value: GenerationContextType = {
     generations,

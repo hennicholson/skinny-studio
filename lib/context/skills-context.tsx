@@ -113,16 +113,86 @@ function skillsReducer(state: SkillsState, action: SkillsAction): SkillsState {
 }
 
 // Intent-to-skill mapping for AI suggestions
+// Comprehensive mapping of user intents to relevant skill shortcuts
 const INTENT_SKILL_MAP: Record<string, string[]> = {
+  // Video & Motion intents
   video: ['cinematic', 'veo', 'motion', 'animation'],
   cinematic: ['cinematic', 'veo', 'motion'],
+  movie: ['cinematic', 'veo', 'motion'],
+  film: ['cinematic', 'veo', 'motion'],
+  animation: ['veo', 'motion', 'animation'],
+  motion: ['veo', 'cinematic', 'motion'],
+  clip: ['veo', 'cinematic', 'social'],
+  reel: ['social', 'veo', 'cinematic'],
+
+  // Product & Commercial intents
   product: ['product-photo', 'product', 'ecommerce', 'commercial'],
+  ecommerce: ['product-photo', 'ecommerce', 'commercial'],
+  commercial: ['product-photo', 'commercial'],
+  advertising: ['product-photo', 'commercial', 'social'],
+  marketing: ['product-photo', 'commercial', 'social', 'text'],
+  brand: ['product-photo', 'commercial', 'text'],
+
+  // Portrait & People intents
   portrait: ['portrait', 'headshot', 'face', 'character'],
+  headshot: ['portrait', 'headshot'],
+  face: ['portrait', 'headshot'],
+  person: ['portrait', 'character'],
+  character: ['portrait', 'character', 'anime'],
+  selfie: ['portrait', 'social'],
+
+  // Social Media intents
   social: ['social', 'instagram', 'tiktok', 'reels'],
+  instagram: ['social', 'instagram'],
+  tiktok: ['social', 'tiktok', 'veo'],
+  reels: ['social', 'veo', 'cinematic'],
+  post: ['social', 'instagram'],
+  story: ['social', 'instagram'],
+
+  // Text & Typography intents
   text: ['text', 'typography', 'logo'],
+  typography: ['text', 'typography'],
+  logo: ['text', 'logo'],
+  poster: ['text', 'typography', 'cinematic'],
+  banner: ['text', 'typography', 'social'],
+  sign: ['text', 'typography'],
+  title: ['text', 'typography', 'cinematic'],
+
+  // Artistic Style intents
   anime: ['anime', 'manga', 'illustration'],
+  manga: ['anime', 'manga'],
+  illustration: ['anime', 'illustration', 'artistic'],
+  cartoon: ['anime', 'illustration'],
+  artistic: ['artistic', 'creative', 'abstract'],
+  creative: ['artistic', 'creative', 'abstract'],
+
+  // Environment & Scene intents
   landscape: ['landscape', 'nature', 'scenic'],
+  nature: ['landscape', 'nature', 'scenic'],
+  scenic: ['landscape', 'scenic', 'cinematic'],
+  environment: ['landscape', 'cinematic'],
+  background: ['landscape', 'scenic'],
+
+  // Abstract & Experimental intents
   abstract: ['abstract', 'artistic', 'creative'],
+  experimental: ['abstract', 'artistic', 'creative'],
+  surreal: ['abstract', 'artistic', 'creative'],
+
+  // Sequential & Multi-image intents
+  storyboard: ['storyboard', 'sequential', 'multi-image', 'comic', 'narrative'],
+  sequential: ['storyboard', 'sequential', 'variations'],
+  variations: ['storyboard', 'sequential', 'variations'],
+  series: ['storyboard', 'sequential'],
+  comic: ['storyboard', 'comic', 'anime'],
+  narrative: ['storyboard', 'narrative', 'cinematic'],
+  multiple: ['storyboard', 'sequential', 'variations'],
+
+  // Editing intents
+  edit: ['edit', 'retouch'],
+  modify: ['edit', 'retouch'],
+  change: ['edit'],
+  remove: ['edit'],
+  background: ['edit', 'product-photo'],
 }
 
 interface SkillsContextValue {

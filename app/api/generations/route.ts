@@ -21,6 +21,9 @@ export async function GET(request: Request) {
     const limit = parseInt(searchParams.get("limit") || "50")
     const offset = parseInt(searchParams.get("offset") || "0")
 
+    // Check if caller wants to include pending generations
+    const includePending = searchParams.get("includePending") === "true"
+
     let query = sbAdmin
       .from("generations")
       .select(`
@@ -35,6 +38,13 @@ export async function GET(request: Request) {
       .eq("whop_user_id", whopUserId)
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1)
+
+    // By default, only return successful generations with actual output
+    if (!includePending) {
+      query = query
+        .eq("replicate_status", "succeeded")
+        .not("output_urls", "is", null)
+    }
 
     if (category) {
       query = query.eq("model_category", category)
