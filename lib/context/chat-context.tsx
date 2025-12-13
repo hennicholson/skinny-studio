@@ -429,9 +429,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 appendToMessage(assistantMessageId, parsed.content)
               }
               if (parsed.generation) {
+                console.log('[ChatContext] Received generation update:', {
+                  status: parsed.generation.status,
+                  model: parsed.generation.model,
+                  hasResult: !!parsed.generation.result,
+                  imageUrl: parsed.generation.result?.imageUrl?.slice(0, 60)
+                })
                 updateGenerationStatus(assistantMessageId, parsed.generation)
                 // When generation completes successfully, trigger refresh callback
                 if (parsed.generation.status === 'complete' && onGenerationCompleteCallback) {
+                  console.log('[ChatContext] Generation complete - calling refresh callback')
                   onGenerationCompleteCallback()
                 }
               }

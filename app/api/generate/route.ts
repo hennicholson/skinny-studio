@@ -12,6 +12,8 @@ type ImagePurpose = 'reference' | 'starting_frame' | 'edit_target' | 'last_frame
 
 interface ImageWithPurpose {
   url: string
+  base64?: string      // Base64 encoded image data (for local uploads)
+  mimeType?: string    // MIME type of the image
   purpose: ImagePurpose
 }
 
@@ -27,6 +29,9 @@ interface GenerateRequest {
   duration?: number
   resolution?: string
   generateAudio?: boolean // For Veo models - controls audio generation and pricing
+  // Seedream 4.5 sequential generation params
+  sequentialImageGeneration?: 'disabled' | 'auto'
+  maxImages?: number
 }
 
 // Calculate cost for video models (per-second pricing)
@@ -119,6 +124,55 @@ async function saveImageToStorage(imageUrl: string, userId?: string): Promise<st
   }
 }
 
+// Upload base64 image to Supabase storage and return HTTP URL
+// This converts local/blob images to URLs that Replicate can access
+async function uploadBase64ToStorage(
+  base64: string,
+  mimeType: string,
+  userId?: string
+): Promise<string> {
+  try {
+    // Convert base64 to buffer
+    const buffer = Buffer.from(base64, 'base64')
+
+    // Determine extension from mime type
+    const ext = mimeType.includes('png') ? 'png'
+      : mimeType.includes('gif') ? 'gif'
+      : mimeType.includes('webp') ? 'webp'
+      : 'jpg'
+
+    // Generate unique filename
+    const filename = `ref-${Date.now()}-${uuidv4().slice(0, 8)}.${ext}`
+    const path = userId ? `${userId}/references/${filename}` : `anonymous/references/${filename}`
+
+    console.log('[Generate] Uploading base64 image to storage:', path, 'size:', buffer.length)
+
+    // Upload to Supabase storage
+    const { data, error } = await sbAdmin.storage
+      .from('generated-images')
+      .upload(path, buffer, {
+        contentType: mimeType,
+        upsert: false,
+      })
+
+    if (error) {
+      console.error('[Generate] Storage upload error:', error)
+      throw error
+    }
+
+    // Get public URL
+    const { data: urlData } = sbAdmin.storage
+      .from('generated-images')
+      .getPublicUrl(path)
+
+    console.log('[Generate] Uploaded base64 to:', urlData.publicUrl)
+    return urlData.publicUrl
+  } catch (error) {
+    console.error('[Generate] Error uploading base64 to storage:', error)
+    throw error
+  }
+}
+
 export async function POST(request: Request) {
   try {
     // === AUTH CHECK ===
@@ -179,7 +233,7 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json() as GenerateRequest
-    const { model, prompt, params = {}, referenceImages, images, conversationId, messageId, duration, resolution, generateAudio } = body
+    const { model, prompt, params = {}, referenceImages, images, conversationId, messageId, duration, resolution, generateAudio, sequentialImageGeneration, maxImages } = body
 
     if (!prompt) {
       return NextResponse.json({ error: 'Prompt is required' }, { status: 400 })
@@ -271,11 +325,62 @@ export async function POST(request: Request) {
       }
     }
 
+    // Handle Seedream 4.5 sequential generation parameters
+    if (model === 'seedream-4.5') {
+      // Set sequential generation mode if provided
+      if (sequentialImageGeneration) {
+        input.sequential_image_generation = sequentialImageGeneration
+      }
+      // Set max_images if sequential is enabled
+      if (sequentialImageGeneration === 'auto' && maxImages) {
+        input.max_images = Math.min(maxImages, 15)
+      }
+    }
+
     // Handle images with purpose-aware parameter mapping
     // Supports both new format (images with purpose) and legacy format (referenceImages)
-    const processedImages = images?.length
+    const rawImages: ImageWithPurpose[] = images?.length
       ? images
       : referenceImages?.map(url => ({ url, purpose: 'reference' as ImagePurpose })) || []
+
+    // Process images: convert blob/base64 to HTTP URLs that Replicate can access
+    const processedImages: { url: string; purpose: ImagePurpose }[] = []
+
+    console.log('[Generate] Raw images received:', rawImages.length)
+    for (const img of rawImages) {
+      console.log('[Generate] Processing image:', {
+        hasUrl: !!img.url,
+        urlStart: img.url?.slice(0, 60),
+        hasBase64: !!img.base64,
+        purpose: img.purpose
+      })
+
+      let httpUrl = img.url
+
+      // Check if URL is already a valid HTTP URL
+      const isHttpUrl = img.url && (img.url.startsWith('http://') || img.url.startsWith('https://'))
+      console.log('[Generate] isHttpUrl:', isHttpUrl)
+
+      if (isHttpUrl) {
+        // HTTP URLs can be used directly by Replicate (e.g., Skinny Hub images)
+        console.log('[Generate] Using HTTP URL directly:', httpUrl?.slice(0, 80))
+        processedImages.push({ url: httpUrl, purpose: img.purpose })
+      } else if (img.base64) {
+        // Local upload with base64 data - upload to Supabase to get HTTP URL
+        console.log('[Generate] Converting base64 to HTTP URL for image with purpose:', img.purpose)
+        try {
+          httpUrl = await uploadBase64ToStorage(img.base64, img.mimeType || 'image/jpeg', whopUserId || undefined)
+          processedImages.push({ url: httpUrl, purpose: img.purpose })
+        } catch (uploadError) {
+          console.error('[Generate] Failed to upload base64 image:', uploadError)
+        }
+      } else {
+        // Blob URL without base64 - can't use it
+        console.error('[Generate] Skipping blob URL without base64 data:', img.url?.slice(0, 50))
+      }
+    }
+
+    console.log('[Generate] Processed images count:', processedImages.length)
 
     if (processedImages.length > 0) {
       // Group images by purpose
@@ -405,11 +510,101 @@ export async function POST(request: Request) {
       }
     }
 
-    // Run the model
-    const output = await replicate.run(
-      studioModel.replicate_model as `${string}/${string}` | `${string}/${string}:${string}`,
-      { input }
-    )
+    // Start the prediction and get the prediction ID immediately
+    // This ensures we can track the generation even if the function times out
+    const replicateModel = studioModel.replicate_model as `${string}/${string}` | `${string}/${string}:${string}`
+
+    // Parse model identifier for predictions.create
+    let modelOwner: string, modelName: string, modelVersion: string | undefined
+    if (replicateModel.includes(':')) {
+      const [ownerName, version] = replicateModel.split(':')
+      const [owner, name] = ownerName.split('/')
+      modelOwner = owner
+      modelName = name
+      modelVersion = version
+    } else {
+      const [owner, name] = replicateModel.split('/')
+      modelOwner = owner
+      modelName = name
+    }
+
+    // Create prediction (non-blocking start)
+    console.log('[Generate] Creating prediction for:', modelOwner, modelName, modelVersion ? `version: ${modelVersion}` : 'latest')
+
+    let prediction
+    if (modelVersion) {
+      prediction = await replicate.predictions.create({
+        version: modelVersion,
+        input,
+      })
+    } else {
+      // For models without version, use the model identifier format
+      prediction = await replicate.predictions.create({
+        model: `${modelOwner}/${modelName}`,
+        input,
+      })
+    }
+
+    console.log('[Generate] Prediction created:', prediction.id, 'Status:', prediction.status)
+
+    // Update generation record with prediction ID immediately
+    // This allows the scheduled poll function to recover if we timeout
+    if (generationId && prediction.id) {
+      await sbAdmin
+        .from("generations")
+        .update({ replicate_prediction_id: prediction.id })
+        .eq("id", generationId)
+      console.log('[Generate] Saved prediction ID to generation:', generationId)
+    }
+
+    // Wait for prediction to complete with timeout
+    // Use a shorter timeout than Netlify's limit to ensure we can save state
+    const POLL_TIMEOUT_MS = 55000 // 55 seconds (leave 5s buffer before Netlify timeout)
+    const POLL_INTERVAL_MS = 1000 // Poll every 1 second
+    const startTime = Date.now()
+
+    let completedPrediction = prediction
+    while (completedPrediction.status === 'starting' || completedPrediction.status === 'processing') {
+      if (Date.now() - startTime > POLL_TIMEOUT_MS) {
+        console.log('[Generate] Prediction still processing after timeout, returning pending status')
+        // Return a "pending" response - the frontend will need to poll or the scheduled function will complete it
+        return NextResponse.json({
+          success: false,
+          pending: true,
+          generationId,
+          predictionId: prediction.id,
+          message: 'Generation is processing. Please check your library in a few moments.',
+        })
+      }
+
+      await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS))
+      completedPrediction = await replicate.predictions.get(prediction.id)
+      console.log('[Generate] Prediction status:', completedPrediction.status)
+    }
+
+    // Check for failure
+    if (completedPrediction.status === 'failed' || completedPrediction.status === 'canceled') {
+      console.error('[Generate] Prediction failed:', completedPrediction.error)
+
+      if (generationId) {
+        await sbAdmin
+          .from("generations")
+          .update({
+            replicate_status: completedPrediction.status,
+            replicate_error: completedPrediction.error || 'Unknown error',
+            completed_at: new Date().toISOString(),
+          })
+          .eq("id", generationId)
+      }
+
+      return NextResponse.json({
+        error: completedPrediction.error || 'Generation failed',
+        code: 'PREDICTION_FAILED',
+      }, { status: 500 })
+    }
+
+    // Prediction succeeded - extract output
+    const output = completedPrediction.output
 
     // Handle different output formats from Replicate
     // Replicate SDK can return:
@@ -483,36 +678,116 @@ export async function POST(request: Request) {
       throw new Error('No output from model - could not extract URLs')
     }
 
-    // === SAVE IMAGES TO SUPABASE STORAGE ===
-    // Convert temporary Replicate URLs to permanent Supabase storage URLs
-    const permanentUrls: string[] = []
-    for (const tempUrl of outputUrls) {
-      const permanentUrl = await saveImageToStorage(tempUrl, whopUserId || undefined)
-      permanentUrls.push(permanentUrl)
+    // === CALCULATE FINAL COST (dynamic billing for multi-image output) ===
+    // For Seedream 4.5 with sequential generation, charge per image generated
+    const numImagesGenerated = outputUrls.length
+    let finalCostCents = costCents
+
+    if (model === 'seedream-4.5' && numImagesGenerated > 1) {
+      // Multiply base cost by number of images generated
+      finalCostCents = costCents * numImagesGenerated
+      console.log(`[Generate] Seedream 4.5 sequential: ${numImagesGenerated} images × ${costCents}¢ = ${finalCostCents}¢`)
     }
 
-    // Use the permanent URLs instead of temp Replicate URLs
+    // === FIRST UPDATE: Save temp URLs immediately after Replicate completes ===
+    // This ensures the generation is saved even if storage upload fails/times out
+    if (generationId) {
+      console.log('[Generate] Saving temp URLs to DB immediately...')
+      const { error: tempUpdateError } = await sbAdmin
+        .from("generations")
+        .update({
+          output_urls: outputUrls,  // Temp Replicate URLs first
+          replicate_status: 'succeeded',
+          completed_at: new Date().toISOString(),
+          cost_cents: finalCostCents,
+          metadata: {
+            images_generated: numImagesGenerated,
+            storage_pending: true,  // Flag that we still need to upload to storage
+            ...(model === 'seedream-4.5' && sequentialImageGeneration === 'auto' && {
+              sequential_mode: true,
+              max_images_requested: maxImages,
+            }),
+          },
+        })
+        .eq("id", generationId)
+
+      if (tempUpdateError) {
+        console.error('[Generate] Failed to save temp URLs:', tempUpdateError)
+      } else {
+        console.log('[Generate] Temp URLs saved successfully')
+      }
+    }
+
+    // === SAVE IMAGES TO SUPABASE STORAGE ===
+    // Convert temporary Replicate URLs to permanent Supabase storage URLs
+    // Upload ALL images in parallel for speed - Replicate URLs expire in ~1 hour
+    // We MUST upload to permanent storage before URLs expire
+    const STORAGE_UPLOAD_TIMEOUT = 15000 // 15 seconds per image (increased for reliability)
+
+    console.log(`[Generate] Uploading ${outputUrls.length} images to permanent storage in parallel...`)
+
+    const uploadPromises = outputUrls.map(async (tempUrl, index) => {
+      try {
+        const permanentUrl = await Promise.race([
+          saveImageToStorage(tempUrl, whopUserId || undefined),
+          new Promise<string>((_, reject) =>
+            setTimeout(() => reject(new Error('Storage upload timeout')), STORAGE_UPLOAD_TIMEOUT)
+          )
+        ])
+        console.log(`[Generate] Image ${index + 1} uploaded successfully`)
+        return { success: true, url: permanentUrl, tempUrl }
+      } catch (error) {
+        console.error(`[Generate] Image ${index + 1} upload failed:`, error)
+        return { success: false, url: tempUrl, tempUrl, error }
+      }
+    })
+
+    const uploadResults = await Promise.all(uploadPromises)
+    const permanentUrls = uploadResults.map(r => r.url)
+    const failedUploads = uploadResults.filter(r => !r.success)
+
+    if (failedUploads.length > 0) {
+      console.warn(`[Generate] ${failedUploads.length}/${outputUrls.length} uploads failed - will need migration`)
+    }
+
+    // Use the permanent URLs (or fallback temp URLs)
     const finalOutputUrls = permanentUrls
     const imageUrl = finalOutputUrls[0]
 
-    // === UPDATE GENERATION RECORD ===
+    // === SECOND UPDATE: Update with permanent storage URLs ===
     if (generationId) {
-      await sbAdmin
+      console.log('[Generate] Updating with permanent storage URLs...')
+      const allUploadsSucceeded = failedUploads.length === 0
+      const { error: updateError } = await sbAdmin
         .from("generations")
         .update({
           output_urls: finalOutputUrls,
-          replicate_status: 'succeeded',
-          completed_at: new Date().toISOString(),
+          metadata: {
+            images_generated: numImagesGenerated,
+            storage_pending: !allUploadsSucceeded,  // True if any uploads failed (needs migration)
+            storage_complete: allUploadsSucceeded,
+            failed_uploads: failedUploads.length,
+            ...(model === 'seedream-4.5' && sequentialImageGeneration === 'auto' && {
+              sequential_mode: true,
+              max_images_requested: maxImages,
+            }),
+          },
         })
         .eq("id", generationId)
+
+      if (updateError) {
+        console.error('[Generate] Failed to update with permanent URLs:', updateError)
+      } else {
+        console.log(`[Generate] URLs saved successfully (${allUploadsSucceeded ? 'all permanent' : 'some temp URLs need migration'})`)
+      }
     }
 
     // === DEDUCT BALANCE (only if not lifetime and cost > 0) ===
-    if (userProfileId && !hasLifetimeAccess && costCents > 0) {
+    if (userProfileId && !hasLifetimeAccess && finalCostCents > 0) {
       const { error: deductError } = await sbAdmin
         .from("user_profiles")
         .update({
-          balance_cents: balanceCents - costCents,
+          balance_cents: balanceCents - finalCostCents,
           updated_at: new Date().toISOString(),
         })
         .eq("id", userProfileId)
@@ -525,7 +800,7 @@ export async function POST(request: Request) {
     // === LOG TRANSACTION FOR ALL USERS (including lifetime) ===
     // This ensures all users see their generation history in spending log
     if (whopUserId) {
-      const effectiveCost = hasLifetimeAccess ? 0 : costCents
+      const effectiveCost = hasLifetimeAccess ? 0 : finalCostCents
 
       const { error: txError } = await sbAdmin.from("credit_transactions").insert({
         user_id: whopUserId,
@@ -544,6 +819,13 @@ export async function POST(request: Request) {
           category: studioModel.category,
           pricing_type: studioModel.pricing_type,
           is_lifetime_user: hasLifetimeAccess,
+          images_generated: numImagesGenerated,
+          // Seedream 4.5 sequential pricing breakdown
+          ...(model === 'seedream-4.5' && numImagesGenerated > 1 && {
+            sequential_mode: true,
+            cost_per_image_cents: costCents,
+            total_cost_cents: finalCostCents,
+          }),
           // Video-specific pricing breakdown
           ...(studioModel.pricing_type === 'per_second' && {
             duration: effectiveDuration,
@@ -572,9 +854,19 @@ export async function POST(request: Request) {
       modelSlug: model,
       category: studioModel.category,
       prompt,
-      cost: costCents,
+      cost: finalCostCents,
       generationId,
-      newBalance: hasLifetimeAccess ? balanceCents : balanceCents - costCents,
+      newBalance: hasLifetimeAccess ? balanceCents : balanceCents - finalCostCents,
+      imagesGenerated: numImagesGenerated,
+      // Seedream 4.5 sequential pricing breakdown
+      ...(model === 'seedream-4.5' && numImagesGenerated > 1 && {
+        pricingBreakdown: {
+          sequentialMode: true,
+          costPerImageCents: costCents,
+          imagesGenerated: numImagesGenerated,
+          totalCostCents: finalCostCents,
+        }
+      }),
       // Video-specific pricing breakdown
       ...(studioModel.pricing_type === 'per_second' && {
         pricingBreakdown: {

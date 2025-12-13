@@ -44,6 +44,9 @@ interface GenerationBlock {
   // Video-specific fields
   duration?: number
   resolution?: string
+  // Seedream 4.5 sequential generation fields
+  sequentialImageGeneration?: 'disabled' | 'auto'
+  maxImages?: number
 }
 
 interface SkillCreationBlock {
@@ -74,6 +77,9 @@ function parseGenerationBlock(text: string): GenerationBlock | null {
         // Video-specific fields
         duration: json.duration,
         resolution: json.resolution,
+        // Seedream 4.5 sequential generation fields
+        sequentialImageGeneration: json.sequentialImageGeneration,
+        maxImages: json.maxImages,
       }
     }
   } catch (e) {
@@ -218,28 +224,34 @@ export async function POST(request: Request) {
         parts.push({ text: msg.content })
       }
 
-      // Add images if model supports vision and message has attachments
-      if (supportsVision && msg.attachments?.length) {
-        // Build context about attached images
-        const imageAttachments = msg.attachments.filter(a => a.type === 'image' && a.base64 && a.mimeType)
+      // Add image context to message - both local uploads AND Skinny Hub references
+      // This ensures the AI orchestrator knows about ALL attached images
+      if (msg.attachments?.length) {
+        // Get all image attachments - both 'image' (local) and 'reference' (Skinny Hub)
+        const allImageAttachments = msg.attachments.filter(a =>
+          (a.type === 'image' || a.type === 'reference') && (a.base64 || a.url)
+        )
 
-        if (imageAttachments.length > 0) {
-          // Add context text about the images BEFORE the image data
-          const imageContexts = imageAttachments.map((att, i) => {
+        if (allImageAttachments.length > 0) {
+          // Add context text about ALL images (regardless of base64) so AI knows they exist
+          const imageContexts = allImageAttachments.map((att, i) => {
             const purposeLabel = att.purpose ? PURPOSE_CONTEXT[att.purpose] : 'REFERENCE IMAGE'
             return `[Image ${i + 1}: ${purposeLabel}]`
           }).join('\n')
 
           parts.push({ text: `\n\n--- ATTACHED IMAGES ---\n${imageContexts}\n` })
 
-          // Add the actual image data
-          for (const attachment of imageAttachments) {
-            parts.push({
-              inlineData: {
-                data: attachment.base64,
-                mimeType: attachment.mimeType,
-              }
-            })
+          // Add inline image data ONLY for images with base64 (vision models only)
+          if (supportsVision) {
+            const base64Attachments = allImageAttachments.filter(a => a.base64 && a.mimeType)
+            for (const attachment of base64Attachments) {
+              parts.push({
+                inlineData: {
+                  data: attachment.base64,
+                  mimeType: attachment.mimeType,
+                }
+              })
+            }
           }
         }
       }
@@ -340,13 +352,59 @@ export async function POST(request: Request) {
               if (whopUserId) forwardHeaders['x-whop-user-id'] = whopUserId
               if (cookie) forwardHeaders['cookie'] = cookie
 
-              // Collect images from the last message with their purposes
-              const imagesWithPurposes = lastMessage.attachments
-                ?.filter(att => att.type === 'image' && att.url)
-                .map(att => ({
-                  url: att.url,
-                  purpose: att.purpose || 'reference',  // Default to reference if no purpose set
-                })) || []
+              // Collect images from the ENTIRE conversation history (not just last message)
+              // This is critical: user might attach an image in message 1, then confirm in message 3
+              // We need to find all images across the conversation
+              // Include base64 data so generate route can upload to storage if needed
+              // Include both 'image' and 'reference' types (from Skinny Hub)
+              const imagesWithPurposes: Array<{
+                url: string
+                base64?: string
+                mimeType?: string
+                purpose: string
+              }> = []
+
+              // Iterate through ALL messages (most recent first) to find images
+              // This ensures we capture images from earlier in the conversation
+              for (let i = messages.length - 1; i >= 0; i--) {
+                const msg = messages[i]
+                if (msg.role === 'user' && msg.attachments?.length) {
+                  const imageAttachments = msg.attachments.filter(
+                    att => (att.type === 'image' || att.type === 'reference') && (att.base64 || att.url)
+                  )
+                  for (const att of imageAttachments) {
+                    // Only add if we don't already have an image with this purpose
+                    // (prefer more recent images for each purpose)
+                    const existingWithPurpose = imagesWithPurposes.find(
+                      img => img.purpose === (att.purpose || 'reference')
+                    )
+                    if (!existingWithPurpose) {
+                      imagesWithPurposes.push({
+                        url: att.url,
+                        base64: att.base64,
+                        mimeType: att.mimeType,
+                        purpose: att.purpose || 'reference',
+                      })
+                    }
+                  }
+                }
+              }
+
+              // Log attachment debugging info
+              console.log('[Chat] Total messages in conversation:', messages.length)
+              console.log('[Chat] Last message attachments:', lastMessage.attachments?.length || 0)
+              console.log('[Chat] Images collected from conversation history:', imagesWithPurposes.length)
+              if (imagesWithPurposes.length > 0) {
+                console.log('[Chat] Images detail:', JSON.stringify(imagesWithPurposes.map(i => ({
+                  purpose: i.purpose,
+                  hasUrl: !!i.url,
+                  hasBase64: !!i.base64,
+                  urlType: i.url?.startsWith('http') ? 'http' : i.url?.startsWith('blob') ? 'blob' : 'other',
+                  urlPreview: i.url?.slice(0, 80)
+                }))))
+              } else {
+                console.warn('[Chat] WARNING: No images found in conversation history!')
+              }
 
               console.log('[Chat] Calling generate API for model:', genBlock.model)
               const generateUrl = new URL('/api/generate', request.url).href
@@ -362,6 +420,9 @@ export async function POST(request: Request) {
                   // Video-specific fields
                   duration: genBlock.duration,
                   resolution: genBlock.resolution,
+                  // Seedream 4.5 sequential generation fields
+                  sequentialImageGeneration: genBlock.sequentialImageGeneration,
+                  maxImages: genBlock.maxImages,
                   // Pass images with purposes
                   images: imagesWithPurposes.length > 0 ? imagesWithPurposes : undefined,
                 }),

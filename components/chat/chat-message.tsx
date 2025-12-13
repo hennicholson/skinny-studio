@@ -259,7 +259,8 @@ function AttachmentPreviews({ attachments }: { attachments: ChatAttachment[] }) 
 
   if (attachments.length === 0) return null
 
-  const imageCount = attachments.filter(a => a.type === 'image').length
+  // Count all image-type attachments (both 'image' for local and 'reference' for Skinny Hub)
+  const imageCount = attachments.filter(a => a.type === 'image' || a.type === 'reference').length
   const isSingleImage = imageCount === 1
 
   return (
@@ -268,31 +269,50 @@ function AttachmentPreviews({ attachments }: { attachments: ChatAttachment[] }) 
         "flex flex-wrap gap-2 mb-2",
         isSingleImage && "max-w-xs"
       )}>
-        {attachments.map((attachment) => (
-          <div
-            key={attachment.id}
-            className={cn(
-              "relative rounded-lg overflow-hidden border border-zinc-700 bg-zinc-800 cursor-pointer hover:border-zinc-500 transition-colors",
-              isSingleImage ? "w-full aspect-auto max-h-48" : "w-16 h-16"
-            )}
-            onClick={() => setExpandedImage(attachment.url)}
-          >
-            {attachment.type === 'image' ? (
-              <img
-                src={attachment.url}
-                alt={attachment.name}
-                className={cn(
-                  "object-cover",
-                  isSingleImage ? "w-full h-full max-h-48 object-contain" : "w-full h-full"
-                )}
-              />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center">
-                <ImageIcon size={20} className="text-zinc-500" />
-              </div>
-            )}
-          </div>
-        ))}
+        {attachments.map((attachment) => {
+          // Both 'image' (local upload) and 'reference' (Skinny Hub) should display as images
+          const isImageType = attachment.type === 'image' || attachment.type === 'reference'
+
+          return (
+            <div
+              key={attachment.id}
+              className={cn(
+                "relative rounded-lg overflow-hidden border border-zinc-700 bg-zinc-800 cursor-pointer hover:border-zinc-500 transition-colors",
+                isSingleImage ? "w-full aspect-auto max-h-48" : "w-16 h-16"
+              )}
+              onClick={() => setExpandedImage(attachment.url)}
+            >
+              {isImageType && attachment.url ? (
+                <img
+                  src={attachment.url}
+                  alt={attachment.name}
+                  className={cn(
+                    "object-cover",
+                    isSingleImage ? "w-full h-full max-h-48 object-contain" : "w-full h-full"
+                  )}
+                  onError={(e) => {
+                    // Fallback to icon if image fails to load
+                    const target = e.target as HTMLImageElement
+                    target.style.display = 'none'
+                    target.parentElement?.classList.add('flex', 'items-center', 'justify-center')
+                  }}
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center">
+                  <ImageIcon size={20} className="text-zinc-500" />
+                </div>
+              )}
+              {/* Purpose badge */}
+              {attachment.purpose && (
+                <span className="absolute bottom-0 left-0 right-0 text-[8px] bg-black/80 text-white/90 px-1 py-0.5 text-center truncate">
+                  {attachment.purpose === 'edit_target' ? 'Edit' :
+                   attachment.purpose === 'starting_frame' ? 'Start' :
+                   attachment.purpose === 'last_frame' ? 'End' : 'Ref'}
+                </span>
+              )}
+            </div>
+          )
+        })}
       </div>
 
       {/* Expanded image modal */}

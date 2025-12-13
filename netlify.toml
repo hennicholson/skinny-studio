@@ -7,3 +7,17 @@
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"
+
+# Function configuration for longer-running operations
+[functions]
+  # Extend timeout for serverless functions that handle AI generation
+  # Note: This requires Netlify Pro plan for > 10 seconds
+  # 60 second timeout covers most image generation scenarios
+  node_bundler = "esbuild"
+
+# Match Next.js API routes that need extended timeout
+[functions."*"]
+  # Default timeout for all functions (in seconds)
+  # Free tier: max 10s, Pro tier: max 26s
+  # For longer operations, use background functions or webhooks
+  external_node_modules = ["replicate", "@supabase/supabase-js"]
