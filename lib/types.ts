@@ -20,7 +20,7 @@ export interface AIModel {
   name: string
   provider: string
   description: string
-  category: 'image' | 'video'
+  category: 'image' | 'video' | 'chat'
   tags: string[]
   capabilities?: {
     speed: 'fast' | 'medium' | 'slow'
@@ -298,6 +298,82 @@ For complex sequences, use timestamps:
       'POV handheld shot running through neon-lit Tokyo streets at night @veo',
       '@veo tracking shot following a dancer, golden hour lighting, shallow depth of field'
     ]
+  },
+  {
+    name: 'Sequential Storyboard',
+    description: 'Generate multiple connected images as a visual sequence or storyboard with Seedream 4.5',
+    category: 'workflow',
+    icon: '🎬',
+    content: `## Sequential Storyboard Generation (Seedream 4.5)
+
+Use this skill to create multi-image sequences like:
+- Storyboards (sequential scenes telling a story)
+- Character variations (same character, different poses/expressions)
+- Style exploration sheets
+- Visual narratives / comic panels
+- Brand asset variations
+
+### How to Structure Sequential Prompts
+
+Always use this template format for best results:
+
+\`\`\`
+Generate [NUMBER] separate images sequentially. Each is a complete standalone [ASPECT_RATIO] photo.
+
+**Shared Visual Elements:**
+- Lighting: [describe consistent lighting, e.g., "golden hour", "dramatic shadows"]
+- Color palette: [describe colors, e.g., "warm amber/sage/gold/teal"]
+- Camera: [describe lens/style, e.g., "35mm f/2.8, cinematic composition"]
+- Style: [describe overall aesthetic, e.g., "professional corporate photography"]
+
+**Image 1:** [SCENE - establishing shot or introduction]
+**Image 2:** [SCENE - development or progression]
+**Image 3:** [SCENE - key moment or climax]
+**Image 4:** [SCENE - resolution or conclusion]
+... (continue for each image)
+
+Maintain exact visual continuity across all images.
+\`\`\`
+
+### Key Parameters
+- **Number of images**: 1-15 (charged per image generated: 7¢ each)
+- **Aspect ratios**: 1:1, 16:9, 9:16, 3:2, 2:3, 4:3, 3:4
+- **sequential_image_generation**: "auto" (enables multi-image mode)
+- **max_images**: Set to your desired count
+
+### Example: 5-Panel Corporate Brand Story
+
+\`\`\`
+Generate 5 separate images sequentially. Each is a complete standalone 16:9 photo.
+
+**Shared Visual Elements:**
+- Lighting: Golden hour lighting through large windows
+- Color palette: Warm amber, sage green, natural wood tones
+- Camera: 35mm f/2.8, professional corporate photography
+- Style: Modern, authentic, aspirational
+
+**Image 1:** Wide establishing shot of a bright, modern open-plan office with a diverse team collaborating around a large wooden table
+**Image 2:** Medium shot of two colleagues having an energetic brainstorming session at a whiteboard
+**Image 3:** Close-up of hands typing on a laptop, coffee cup nearby, warm sunlight streaming in
+**Image 4:** Team members celebrating a small win, genuine smiles, casual high-fives
+**Image 5:** Single professional walking confidently through a glass-walled corridor, city skyline visible
+
+Maintain exact visual continuity across all images.
+\`\`\`
+
+### Pricing
+- 7¢ per image generated
+- Example: 5 images = ~35¢
+- You're charged based on actual images produced`,
+    tags: ['storyboard', 'sequential', 'multi-image', 'seedream', 'narrative', 'comic', 'variations'],
+    isBuiltIn: true,
+    isActive: true,
+    shortcut: 'storyboard',
+    examples: [
+      'Create a 5-panel storyboard of a day in the life of a barista @storyboard',
+      '@storyboard 7-image brand story for a tech startup',
+      'Generate character variations: same person in 4 different emotions @storyboard'
+    ]
   }
 ]
 
@@ -354,6 +430,25 @@ export interface AppSettings {
 // -------------------- Mock Data --------------------
 // These models match the studio_models database table
 export const mockModels: AIModel[] = [
+  // === CHAT MODE ===
+  {
+    id: 'creative-consultant',
+    name: 'Creative Consultant',
+    provider: 'Gemini 2.5 Flash',
+    description: 'Brainstorm ideas, build prompts, and plan creative projects without generating',
+    category: 'chat',
+    tags: ['brainstorm', 'planning', 'free'],
+    capabilities: { speed: 'fast', quality: 'high' },
+  },
+  {
+    id: 'storyboard-mode',
+    name: 'Storyboard Mode',
+    provider: 'Skinny Studio',
+    description: 'Plan multi-shot projects with entities for characters, worlds, objects, and styles',
+    category: 'chat',
+    tags: ['storyboard', 'planning', 'shots', 'entities'],
+    capabilities: { speed: 'fast', quality: 'high' },
+  },
   // === IMAGE MODELS ===
   {
     id: 'seedream-4.5',
@@ -614,3 +709,165 @@ export const stylePresets = [
   { id: 'photorealistic', name: 'Photorealistic', description: 'Indistinguishable from photos' },
   { id: '3d-render', name: '3D Render', description: 'CGI and 3D graphics' },
 ]
+
+// -------------------- Storyboard System --------------------
+
+// Entity types for storyboard consistency
+export type EntityType = 'character' | 'world' | 'object' | 'style'
+
+// Folder types (extends library_folders)
+export type FolderType = 'general' | EntityType
+
+export interface StoryboardEntity {
+  id: string
+  storyboardId: string
+  entityType: EntityType
+  entityName: string
+  entityDescription?: string
+  folderId?: string
+  generationId?: string
+  primaryImageUrl: string
+  visionContext?: string // Gemini-analyzed visual description
+  sortOrder: number
+  createdAt: string
+}
+
+export interface CreateEntityInput {
+  entityType: EntityType
+  entityName: string
+  folderId?: string
+  generationId?: string
+  imageUrl: string
+}
+
+export interface StoryboardShot {
+  id: string
+  storyboardId: string
+  shotNumber: number
+  sortOrder: number
+  title?: string
+  description: string
+  cameraAngle?: string
+  cameraMovement?: string
+  durationSeconds: number
+  mediaType: 'image' | 'video'
+
+  // Generation link
+  generationId?: string
+  prompt?: string
+  modelSlug?: string
+  status: 'pending' | 'generating' | 'completed' | 'error'
+  generatedImageUrl?: string  // URL of the generated image (populated from generation)
+
+  // AI suggestions
+  aiSuggestedPrompt?: string
+  aiNotes?: string
+
+  // Timestamps
+  createdAt: string
+  updatedAt: string
+  generatedAt?: string
+
+  // Entity references (populated from shot_entity_references)
+  entities?: ShotEntityReference[]
+}
+
+export interface ShotEntityReference {
+  id: string
+  shotId: string
+  entityId: string
+  role?: string
+  notes?: string
+  entity?: StoryboardEntity // Populated via join
+}
+
+export interface Storyboard {
+  id: string
+  whopUserId: string
+  title: string
+  description?: string
+  genre?: string
+  mood?: string
+  styleNotes?: string
+
+  // Settings
+  conversationId?: string
+  defaultAspectRatio: string
+  defaultModelSlug: string
+
+  // Status
+  status: 'planning' | 'in_progress' | 'completed'
+  totalShots: number
+  completedShots: number
+
+  // Timestamps
+  createdAt: string
+  updatedAt: string
+
+  // Populated relations
+  shots?: StoryboardShot[]
+  entities?: StoryboardEntity[]
+}
+
+export interface CreateStoryboardInput {
+  title?: string
+  description?: string
+  genre?: string
+  mood?: string
+  styleNotes?: string
+  defaultAspectRatio?: string
+  defaultModelSlug?: string
+}
+
+export interface UpdateStoryboardInput {
+  title?: string
+  description?: string
+  genre?: string
+  mood?: string
+  styleNotes?: string
+  defaultAspectRatio?: string
+  defaultModelSlug?: string
+  status?: 'planning' | 'in_progress' | 'completed'
+}
+
+export interface CreateShotInput {
+  title?: string
+  description: string
+  cameraAngle?: string
+  cameraMovement?: string
+  durationSeconds?: number
+  mediaType?: 'image' | 'video'
+  aiSuggestedPrompt?: string
+  aiNotes?: string
+}
+
+export interface UpdateShotInput {
+  title?: string
+  description?: string
+  cameraAngle?: string
+  cameraMovement?: string
+  durationSeconds?: number
+  mediaType?: 'image' | 'video'
+  prompt?: string
+  modelSlug?: string
+  status?: 'pending' | 'generating' | 'completed' | 'error'
+  aiSuggestedPrompt?: string
+  aiNotes?: string
+}
+
+// Entity badge colors for UI
+export const entityTypeColors: Record<EntityType, { bg: string; text: string; icon: string }> = {
+  character: { bg: 'bg-blue-500/20', text: 'text-blue-400', icon: '👤' },
+  world: { bg: 'bg-green-500/20', text: 'text-green-400', icon: '🌍' },
+  object: { bg: 'bg-orange-500/20', text: 'text-orange-400', icon: '🔧' },
+  style: { bg: 'bg-purple-500/20', text: 'text-purple-400', icon: '🎨' },
+}
+
+// Folder type display config
+export const folderTypeConfig: Record<FolderType, { label: string; icon: string; color: string }> = {
+  general: { label: 'General', icon: '📁', color: 'text-zinc-400' },
+  character: { label: 'Character', icon: '👤', color: 'text-blue-400' },
+  world: { label: 'World', icon: '🌍', color: 'text-green-400' },
+  object: { label: 'Object', icon: '🔧', color: 'text-orange-400' },
+  style: { label: 'Style', icon: '🎨', color: 'text-purple-400' },
+}

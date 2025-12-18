@@ -3,7 +3,7 @@ export interface AIModel {
   name: string
   provider: string
   description: string
-  category: 'image' | 'video'
+  category: 'image' | 'video' | 'chat'
   tags: string[]
 }
 
@@ -44,6 +44,22 @@ export interface Workflow {
 
 // Mock AI Models
 export const mockModels: AIModel[] = [
+  {
+    id: 'creative-consultant',
+    name: 'Creative Consultant',
+    provider: 'Skinny Studio',
+    description: 'Brainstorm ideas, build prompts, and plan creative projects without generating',
+    category: 'chat',
+    tags: ['brainstorm', 'planning', 'free']
+  },
+  {
+    id: 'storyboard-mode',
+    name: 'Storyboard Mode',
+    provider: 'Skinny Studio',
+    description: 'Plan multi-shot creative projects with AI assistance, entity management, and timeline view',
+    category: 'chat',
+    tags: ['storyboard', 'planning', 'shots']
+  },
   {
     id: 'flux-pro',
     name: 'FLUX Pro',

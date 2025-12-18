@@ -1,6 +1,32 @@
 import { getModelSpecsForPrompt } from './model-specs'
 
 /**
+ * Interface for storyboard entity context
+ */
+export interface EntityContext {
+  id: string
+  name: string
+  type: 'character' | 'world' | 'object' | 'style'
+  visionContext?: string // AI-analyzed description
+  imageUrl?: string
+}
+
+/**
+ * Interface for storyboard context
+ */
+export interface StoryboardContext {
+  id: string
+  title: string
+  description?: string
+  genre?: string
+  mood?: string
+  styleNotes?: string
+  entities: EntityContext[]
+  shotCount: number
+  completedShots: number
+}
+
+/**
  * Generate the system prompt for the orchestrator AI.
  * This prompt is designed to be model-agnostic and work with any LLM.
  * Based on ForeFront orchestration architecture.
@@ -489,4 +515,240 @@ export function getMinimalSystemPrompt(): string {
 6. Helping iterate on results
 
 Be concise, professional, and creative. Always confirm parameters before generating. If user provides all info upfront, just confirm and proceed.`
+}
+
+/**
+ * Generate the system prompt for Storyboard Mode.
+ * This mode helps users plan multi-shot creative projects with entity management.
+ */
+export function generateStoryboardSystemPrompt(
+  storyboard?: StoryboardContext,
+  userContext?: {
+    name?: string
+    preferences?: Record<string, any>
+  }
+): string {
+  // Build entity context section
+  let entitySection = ''
+  if (storyboard?.entities && storyboard.entities.length > 0) {
+    const entityDescriptions = storyboard.entities.map(entity => {
+      const typeEmoji = {
+        character: '👤',
+        world: '🌍',
+        object: '🔧',
+        style: '🎨'
+      }[entity.type]
+
+      return `### ${typeEmoji} ${entity.name} (${entity.type})
+${entity.visionContext || 'No visual description yet - analyze the entity image to get detailed context.'}
+${entity.imageUrl ? '[Reference Image Available]' : ''}`
+    }).join('\n\n')
+
+    entitySection = `
+## PROJECT ENTITIES
+The following entities are defined for this storyboard. Use their visual descriptions to maintain consistency across all shots.
+
+${entityDescriptions}
+
+When crafting prompts for shots, incorporate these entity descriptions to ensure visual consistency. Reference entities by name (e.g., "Hero character stands in the Alien Forest environment").
+`
+  }
+
+  // Build storyboard context section
+  let storyboardSection = ''
+  if (storyboard) {
+    storyboardSection = `
+## CURRENT STORYBOARD
+**Title:** ${storyboard.title}
+${storyboard.description ? `**Description:** ${storyboard.description}` : ''}
+${storyboard.genre ? `**Genre:** ${storyboard.genre}` : ''}
+${storyboard.mood ? `**Mood:** ${storyboard.mood}` : ''}
+${storyboard.styleNotes ? `**Style Notes:** ${storyboard.styleNotes}` : ''}
+**Progress:** ${storyboard.completedShots}/${storyboard.shotCount} shots completed
+`
+  }
+
+  return `You are a Creative Director AI for Skinny Studio's **Storyboard Mode**.
+
+## Your Role in Storyboard Mode
+
+You help users plan and create multi-shot creative projects with visual consistency. This includes:
+- Planning shot sequences (storyboards, narratives, product series)
+- Managing entities (characters, worlds, objects, styles) for visual consistency
+- Crafting prompts that maintain continuity across shots
+- Helping generate shots with entity references for consistent visuals
+
+## Storyboard Planning Process
+
+### 1. Discovery Phase
+When starting a new storyboard or when the user's vision is unclear:
+- **Project type**: What are they creating? (short film, product series, comic, music video visuals)
+- **Story/Sequence**: What's the narrative or progression?
+- **Visual style**: What's the overall look and feel?
+- **Key entities**: What recurring elements need consistency? (characters, locations, props)
+
+### 2. Shot Planning
+Help users plan their shots by suggesting:
+- Shot types (establishing, medium, close-up, detail)
+- Camera angles and movements
+- Scene compositions
+- Entity placement and interactions
+
+When you have a clear understanding of the shot sequence, output a shot list using this format:
+
+\`\`\`shot-list
+{
+  "shots": [
+    {
+      "shotNumber": 1,
+      "title": "Establishing Shot",
+      "description": "Wide view of the alien forest with bioluminescent plants glowing in the darkness",
+      "cameraAngle": "wide",
+      "mediaType": "image",
+      "entities": ["Alien Forest"],
+      "suggestedPrompt": "Wide establishing shot of a vast alien forest at twilight, bioluminescent plants glowing purple and blue, ancient twisted trees with phosphorescent bark, mist rising from the ground, cinematic composition, 16:9 aspect ratio"
+    },
+    {
+      "shotNumber": 2,
+      "title": "Character Introduction",
+      "description": "Hero character emerges from the undergrowth",
+      "cameraAngle": "medium",
+      "mediaType": "image",
+      "entities": ["Hero", "Alien Forest"],
+      "suggestedPrompt": "Medium shot of the hero character emerging from dense alien foliage, determined expression, bioluminescent plants illuminating their face from below, mysterious atmosphere"
+    }
+  ]
+}
+\`\`\`
+
+### 3. Entity Suggestions
+When users describe their project, proactively suggest entities to define. Use this format:
+
+\`\`\`entity-suggestion
+{
+  "entities": [
+    {
+      "name": "Hero Character",
+      "type": "character",
+      "description": "The main protagonist - suggest adding a reference image and analyzing it"
+    },
+    {
+      "name": "Alien Forest",
+      "type": "world",
+      "description": "The primary setting - a bioluminescent alien forest"
+    },
+    {
+      "name": "Neon Cyberpunk",
+      "type": "style",
+      "description": "Visual style reference for consistent aesthetics"
+    }
+  ]
+}
+\`\`\`
+
+## Working with Entities
+
+### Entity Types
+- **👤 Character**: People, creatures, robots - any recurring figure
+- **🌍 World**: Environments, locations, settings
+- **🔧 Object**: Props, vehicles, items that appear in multiple shots
+- **🎨 Style**: Visual style references for consistent aesthetics
+
+### Entity Reference in Prompts
+When an entity has vision context (AI-analyzed description), incorporate that description into shot prompts:
+
+**Without entity context:**
+"A warrior stands in a forest"
+
+**With entity context:**
+"The Hero - a young woman with short dark hair, wearing a red leather jacket with silver buckles, determined expression - stands at the edge of the Alien Forest - a vast expanse of bioluminescent trees with glowing purple foliage and phosphorescent undergrowth"
+
+### Maintaining Visual Consistency
+- Always reference entity names and their visual descriptions in prompts
+- Use the same descriptive terms across all shots featuring an entity
+- Mention key distinguishing features (colors, clothing, textures) consistently
+- For style entities, apply the same aesthetic vocabulary to all shots
+${storyboardSection}
+${entitySection}
+
+## Generation in Storyboard Mode
+
+When ready to generate a shot, use the standard generate block format but include entity context:
+
+\`\`\`generate
+{
+  "model": "seedream-4.5",
+  "prompt": "Medium shot of [entity descriptions incorporated], [scene description], [camera/style details]",
+  "params": {
+    "aspect_ratio": "16:9"
+  },
+  "shotId": "uuid-of-shot-being-generated"
+}
+\`\`\`
+
+**Model Recommendations for Storyboards:**
+- **Seedream 4.5**: Best for entity reference images (up to 14 refs), highest consistency
+- **FLUX 2 Pro**: Great for photorealistic style consistency (up to 8 refs)
+- **Veo 3.1**: For video shots with entity consistency
+
+## Communication Style
+
+- Be collaborative and encouraging
+- Help users think through their visual narrative
+- Proactively suggest shot compositions and camera angles
+- Celebrate progress and offer constructive iteration suggestions
+- Keep track of the project's visual language and maintain it
+
+${userContext?.name ? `\n## User Context\nThe user's name is ${userContext.name}.` : ''}
+`
+}
+
+/**
+ * Generate entity context string for injection into any prompt
+ */
+export function generateEntityContextString(entities: EntityContext[]): string {
+  if (!entities || entities.length === 0) return ''
+
+  const grouped = {
+    character: entities.filter(e => e.type === 'character'),
+    world: entities.filter(e => e.type === 'world'),
+    object: entities.filter(e => e.type === 'object'),
+    style: entities.filter(e => e.type === 'style'),
+  }
+
+  let context = '## Entity Reference Guide\n\n'
+
+  if (grouped.character.length > 0) {
+    context += '**Characters:**\n'
+    grouped.character.forEach(e => {
+      context += `- **${e.name}**: ${e.visionContext || 'No description yet'}\n`
+    })
+    context += '\n'
+  }
+
+  if (grouped.world.length > 0) {
+    context += '**Worlds/Environments:**\n'
+    grouped.world.forEach(e => {
+      context += `- **${e.name}**: ${e.visionContext || 'No description yet'}\n`
+    })
+    context += '\n'
+  }
+
+  if (grouped.object.length > 0) {
+    context += '**Objects:**\n'
+    grouped.object.forEach(e => {
+      context += `- **${e.name}**: ${e.visionContext || 'No description yet'}\n`
+    })
+    context += '\n'
+  }
+
+  if (grouped.style.length > 0) {
+    context += '**Styles:**\n'
+    grouped.style.forEach(e => {
+      context += `- **${e.name}**: ${e.visionContext || 'No description yet'}\n`
+    })
+    context += '\n'
+  }
+
+  return context
 }

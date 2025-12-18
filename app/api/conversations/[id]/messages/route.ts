@@ -22,12 +22,17 @@ export async function POST(
     const conversationId = params.id
 
     // Verify conversation ownership
-    const { data: conversation } = await sbAdmin
+    const { data: conversation, error: convError } = await sbAdmin
       .from("conversations")
       .select("id")
       .eq("id", conversationId)
       .eq("whop_user_id", whopUserId)
-      .single()
+      .maybeSingle()
+
+    if (convError) {
+      console.error("Error checking conversation ownership:", convError)
+      return NextResponse.json({ error: "Server error" }, { status: 500 })
+    }
 
     if (!conversation) {
       return NextResponse.json({ error: "Conversation not found" }, { status: 404 })

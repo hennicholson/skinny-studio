@@ -2,56 +2,94 @@
 
 import { motion } from 'framer-motion'
 import { cn } from '@/lib/utils'
-import { MessageSquare, Images, Settings } from 'lucide-react'
+import { MessageSquare, Images, Users } from 'lucide-react'
+import { hapticLight } from '@/lib/haptics'
 
-export type Mode = 'chat' | 'library' | 'settings'
+// Mode type includes 'settings' but it's only accessible via header icons
+export type Mode = 'chat' | 'library' | 'gallery' | 'settings'
 
 interface ModeSwitcherProps {
   mode: Mode
   setMode: (mode: Mode) => void
 }
 
+const LABEL_WIDTH = 56
+
 export function ModeSwitcher({ mode, setMode }: ModeSwitcherProps) {
+  // Only show these 3 in the tab bar (settings is hidden, accessed via header icon)
   const modes = [
-    { id: 'chat' as const, icon: MessageSquare, label: 'CHAT' },
-    { id: 'library' as const, icon: Images, label: 'LIBRARY' },
-    { id: 'settings' as const, icon: Settings, label: 'SETTINGS' },
+    { id: 'chat' as const, icon: MessageSquare, label: 'Chat' },
+    { id: 'library' as const, icon: Images, label: 'Library' },
+    { id: 'gallery' as const, icon: Users, label: 'Gallery' },
   ]
 
   return (
-    <div className="relative inline-flex bg-zinc-900 p-1 rounded-full border border-zinc-800">
+    <motion.div
+      initial={{ scale: 0.95, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
+      transition={{ type: "spring", stiffness: 300, damping: 26 }}
+      className={cn(
+        "bg-zinc-900/95 backdrop-blur-xl",
+        "border border-white/10 rounded-full",
+        "flex items-center p-1.5",
+        "shadow-[0_4px_20px_rgba(0,0,0,0.3)]",
+        "gap-1"
+      )}
+    >
       {modes.map((item) => {
         const Icon = item.icon
         const isActive = mode === item.id
 
         return (
-          <button
+          <motion.button
             key={item.id}
-            onClick={() => setMode(item.id)}
+            whileTap={{ scale: 0.97 }}
+            onClick={() => {
+              hapticLight()
+              setMode(item.id)
+            }}
             className={cn(
-              "relative px-4 py-2 rounded-full text-xs font-bold uppercase tracking-wider transition-colors duration-200 flex items-center gap-1.5",
+              "flex items-center gap-0 px-3 py-2 rounded-full transition-colors duration-200 relative h-9 min-w-[40px]",
               isActive
-                ? "text-black"
-                : "text-zinc-500 hover:text-zinc-300"
+                ? "bg-skinny-yellow/15 text-skinny-yellow gap-2"
+                : "bg-transparent text-zinc-500 hover:bg-white/5",
+              "focus:outline-none"
             )}
+            aria-label={item.label}
+            type="button"
           >
-            {/* Background indicator for active state */}
-            {isActive && (
-              <motion.div
-                layoutId="activeModeIndicator"
-                className="absolute inset-0 rounded-full bg-skinny-yellow"
-                transition={{
-                  type: "spring",
-                  stiffness: 400,
-                  damping: 30
-                }}
-              />
-            )}
-            <Icon size={14} className="relative z-10 flex-shrink-0" />
-            <span className="relative z-10 hidden sm:inline">{item.label}</span>
-          </button>
+            <Icon
+              size={16}
+              strokeWidth={2}
+              className="transition-colors duration-200 flex-shrink-0"
+            />
+
+            <motion.div
+              initial={false}
+              animate={{
+                width: isActive ? `${LABEL_WIDTH}px` : '0px',
+                opacity: isActive ? 1 : 0,
+                marginLeft: isActive ? '6px' : '0px',
+              }}
+              transition={{
+                width: { type: "spring", stiffness: 350, damping: 32 },
+                opacity: { duration: 0.19 },
+                marginLeft: { duration: 0.19 },
+              }}
+              className="overflow-hidden flex items-center"
+            >
+              <span
+                className={cn(
+                  "font-semibold text-xs whitespace-nowrap select-none transition-opacity duration-200",
+                  isActive ? "text-skinny-yellow" : "opacity-0"
+                )}
+              >
+                {item.label}
+              </span>
+            </motion.div>
+          </motion.button>
         )
       })}
-    </div>
+    </motion.div>
   )
 }

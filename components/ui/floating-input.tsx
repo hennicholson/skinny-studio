@@ -176,9 +176,9 @@ export function FloatingInput({
                       </div>
                       <button
                         onClick={() => removeImage(index)}
-                        className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-lg"
+                        className="absolute -top-2 -right-2 w-6 h-6 min-w-[44px] min-h-[44px] -m-[9px] rounded-full bg-red-500 text-white flex items-center justify-center opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity shadow-lg"
                       >
-                        <X size={10} />
+                        <X size={12} />
                       </button>
                     </motion.div>
                   ))}
@@ -315,7 +315,7 @@ export function FloatingInput({
 
         {/* Footer Info */}
         <div className="flex items-center justify-between mt-2 px-1" id="input-hints">
-          <p className="text-xs text-zinc-600">
+          <p className="text-xs text-zinc-600 hidden sm:block">
             <kbd className="text-zinc-500">Enter</kbd> to generate • <kbd className="text-zinc-500">Shift+Enter</kbd> new line
           </p>
           <p className={cn('text-xs transition-colors', charCountColor)} aria-live="polite">

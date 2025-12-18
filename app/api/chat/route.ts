@@ -1,7 +1,12 @@
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import { generateSystemPrompt } from '@/lib/orchestrator/system-prompt'
+import { getEffectiveGeminiApiKey, isPlatformOrchestrationActive } from '@/lib/platform-settings'
+import { calculateGeminiCost } from '@/lib/gemini-pricing'
+import { sbAdmin } from '@/lib/supabaseAdmin'
 
-export const runtime = 'edge'
+// Use nodejs runtime to support longer generation times (edge has 30s limit)
+export const runtime = 'nodejs'
+export const maxDuration = 300 // 5 minutes to match generate route
 
 // Image purpose types - must match frontend
 type ImagePurpose = 'reference' | 'starting_frame' | 'edit_target' | 'last_frame'
@@ -122,6 +127,86 @@ function stripGenerationBlock(text: string): string {
   return text.replace(/```generate\s*\n[\s\S]*?\n```/g, '').trim()
 }
 
+// Storyboard Mode: Parse shot-list blocks from AI response
+interface ShotListItem {
+  shotNumber: number
+  title?: string
+  description: string
+  cameraAngle?: string
+  cameraMovement?: string
+  mediaType?: 'image' | 'video'
+  entities?: string[]
+  suggestedPrompt?: string
+}
+
+interface ShotListBlock {
+  shots: ShotListItem[]
+}
+
+function parseShotListBlock(text: string): ShotListBlock | null {
+  const regex = /```shot-list\s*\n([\s\S]*?)\n```/
+  const match = text.match(regex)
+
+  if (!match) return null
+
+  try {
+    const json = JSON.parse(match[1])
+    if (json.shots && Array.isArray(json.shots)) {
+      return {
+        shots: json.shots.map((shot: any) => ({
+          shotNumber: shot.shotNumber || 0,
+          title: shot.title,
+          description: shot.description || '',
+          cameraAngle: shot.cameraAngle,
+          cameraMovement: shot.cameraMovement,
+          mediaType: shot.mediaType || 'image',
+          entities: shot.entities || [],
+          suggestedPrompt: shot.suggestedPrompt,
+        }))
+      }
+    }
+  } catch (e) {
+    console.error('Failed to parse shot-list block:', e)
+  }
+
+  return null
+}
+
+// Storyboard Mode: Parse entity suggestion blocks from AI response
+interface EntitySuggestionItem {
+  name: string
+  type: 'character' | 'world' | 'object' | 'style'
+  description?: string
+}
+
+interface EntitySuggestionBlock {
+  entities: EntitySuggestionItem[]
+}
+
+function parseEntitySuggestionBlock(text: string): EntitySuggestionBlock | null {
+  const regex = /```entity-suggestion\s*\n([\s\S]*?)\n```/
+  const match = text.match(regex)
+
+  if (!match) return null
+
+  try {
+    const json = JSON.parse(match[1])
+    if (json.entities && Array.isArray(json.entities)) {
+      return {
+        entities: json.entities.map((entity: any) => ({
+          name: entity.name || 'Unknown',
+          type: entity.type || 'character',
+          description: entity.description,
+        }))
+      }
+    }
+  } catch (e) {
+    console.error('Failed to parse entity-suggestion block:', e)
+  }
+
+  return null
+}
+
 // Supported model IDs
 const SUPPORTED_MODELS = [
   'gemini-2.5-flash',
@@ -148,10 +233,17 @@ export async function POST(request: Request) {
       })
     }
 
-    // Use provided API key or fall back to env variable
-    const effectiveApiKey = apiKey || process.env.GOOGLE_AI_API_KEY
+    // Check if platform orchestration is active (admin provides the key)
+    const isPlatformMode = await isPlatformOrchestrationActive()
 
-    if (!effectiveApiKey) {
+    // Get Whop user ID from headers for tracking
+    const whopUserId = request.headers.get('x-whop-user-id') || null
+
+    // Get effective API key (platform key, user key, or env variable)
+    let effectiveApiKey: string
+    try {
+      effectiveApiKey = await getEffectiveGeminiApiKey(apiKey)
+    } catch (error) {
       return new Response(JSON.stringify({
         error: 'API key required. Please add your Google AI API key in Settings.',
         code: 'NO_API_KEY'
@@ -161,10 +253,10 @@ export async function POST(request: Request) {
       })
     }
 
-    // Validate model ID
+    // Validate model ID - default to gemini-2.5-flash for best quality
     const effectiveModelId = modelId && SUPPORTED_MODELS.includes(modelId)
       ? modelId
-      : 'gemini-2.0-flash-lite'
+      : 'gemini-2.5-flash'
 
     const supportsVision = VISION_MODELS.includes(effectiveModelId)
 
@@ -189,8 +281,27 @@ export async function POST(request: Request) {
       }
     }
 
-    // Add selected generation model context
-    if (selectedGenerationModelId) {
+    // Check if Creative Consultant mode (chat-only, no generation)
+    const isConsultantMode = selectedGenerationModelId === 'creative-consultant'
+
+    if (isConsultantMode) {
+      // Override system prompt for consultant mode - pure brainstorming, no generation
+      systemPrompt += `\n\n## CREATIVE CONSULTANT MODE (Chat Only)\n`
+      systemPrompt += `IMPORTANT: The user has selected "Creative Consultant" mode. This means:\n`
+      systemPrompt += `- DO NOT generate any images or videos\n`
+      systemPrompt += `- DO NOT use the generate_image or generate_video tools\n`
+      systemPrompt += `- DO NOT provide cost estimates or ask to confirm generation\n`
+      systemPrompt += `- Focus ONLY on brainstorming, ideation, and prompt crafting\n\n`
+      systemPrompt += `Your role in this mode:\n`
+      systemPrompt += `1. Help users brainstorm creative ideas and concepts\n`
+      systemPrompt += `2. Craft and refine detailed prompts for future generation\n`
+      systemPrompt += `3. Discuss creative direction, style, composition, and techniques\n`
+      systemPrompt += `4. Explain what different models are good at\n`
+      systemPrompt += `5. Provide artistic feedback and suggestions\n\n`
+      systemPrompt += `When the user is ready to generate, suggest they select an image or video model from the model picker.\n`
+      systemPrompt += `You can say things like "When you're ready to bring this to life, select FLUX Pro or another model to generate!"\n`
+    } else if (selectedGenerationModelId) {
+      // Normal generation mode with pre-selected model
       systemPrompt += `\n\n## User's Selected Generation Model\n`
       systemPrompt += `CRITICAL: The user has pre-selected "${selectedGenerationModelId}" in the UI.\n`
       systemPrompt += `This means they know exactly which model they want - DO NOT:\n`
@@ -314,6 +425,42 @@ export async function POST(request: Request) {
             }
           }
 
+          // Track token usage after streaming completes
+          try {
+            const aggregatedResponse = await result.response
+            const usage = aggregatedResponse.usageMetadata
+
+            if (usage && usage.promptTokenCount && usage.candidatesTokenCount) {
+              const estimatedCost = calculateGeminiCost(
+                effectiveModelId,
+                usage.promptTokenCount,
+                usage.candidatesTokenCount
+              )
+
+              // Log to gemini_usage table
+              await sbAdmin.from('gemini_usage').insert({
+                whop_user_id: whopUserId,
+                prompt_tokens: usage.promptTokenCount,
+                response_tokens: usage.candidatesTokenCount,
+                total_tokens: usage.totalTokenCount || (usage.promptTokenCount + usage.candidatesTokenCount),
+                model: effectiveModelId,
+                estimated_cost_cents: estimatedCost,
+                is_platform_key: isPlatformMode,
+              })
+
+              console.log('[Chat] Token usage logged:', {
+                promptTokens: usage.promptTokenCount,
+                responseTokens: usage.candidatesTokenCount,
+                model: effectiveModelId,
+                estimatedCostCents: estimatedCost,
+                isPlatformKey: isPlatformMode,
+              })
+            }
+          } catch (usageError) {
+            // Don't fail the request if usage tracking fails
+            console.error('[Chat] Failed to track token usage:', usageError)
+          }
+
           // After streaming is complete, check for skill creation block
           const skillBlock = parseSkillCreationBlock(fullResponse)
           if (skillBlock) {
@@ -324,8 +471,8 @@ export async function POST(request: Request) {
             controller.enqueue(encoder.encode(`data: ${skillData}\n\n`))
           }
 
-          // After streaming is complete, check for generation block
-          const genBlock = parseGenerationBlock(fullResponse)
+          // After streaming is complete, check for generation block (skip in consultant mode)
+          const genBlock = isConsultantMode ? null : parseGenerationBlock(fullResponse)
           if (genBlock) {
             // Send generating status
             const generatingData = JSON.stringify({
@@ -425,6 +572,8 @@ export async function POST(request: Request) {
                   maxImages: genBlock.maxImages,
                   // Pass images with purposes
                   images: imagesWithPurposes.length > 0 ? imagesWithPurposes : undefined,
+                  // Always return immediately for frontend polling (Netlify SSE compatibility)
+                  noWait: true,
                 }),
               })
 
@@ -442,7 +591,8 @@ export async function POST(request: Request) {
 
               if (genResult.success && genResult.imageUrl) {
                 console.log('[Chat] Generation successful! imageUrl:', genResult.imageUrl)
-                // Send complete status with result
+                console.log('[Chat] All output URLs:', genResult.outputUrls)
+                // Send complete status with result - include all output URLs for sequential generation
                 const completeData = JSON.stringify({
                   generation: {
                     status: 'complete',
@@ -450,6 +600,7 @@ export async function POST(request: Request) {
                     params: genBlock.params,
                     result: {
                       imageUrl: genResult.imageUrl,
+                      outputUrls: genResult.outputUrls || [genResult.imageUrl],
                       prompt: genBlock.prompt,
                     }
                   }
@@ -457,15 +608,33 @@ export async function POST(request: Request) {
                 console.log('[Chat] Sending complete data to stream')
                 controller.enqueue(encoder.encode(`data: ${completeData}\n\n`))
                 console.log('[Chat] Complete data sent')
+              } else if (genResult.pending && genResult.generationId) {
+                // Generation is still processing - DON'T poll here!
+                // Netlify will timeout before completion (10-26s limit)
+                // Send generationId to frontend for client-side polling
+                console.log('[Chat] Generation pending, sending generationId for frontend polling:', genResult.generationId)
+                const pendingData = JSON.stringify({
+                  generation: {
+                    status: 'generating',  // Keep as generating (frontend will poll)
+                    model: genBlock.model,
+                    params: genBlock.params,
+                    generationId: genResult.generationId,  // Frontend needs this to poll
+                  }
+                })
+                controller.enqueue(encoder.encode(`data: ${pendingData}\n\n`))
               } else {
                 console.log('[Chat] Generation failed:', genResult.error || 'Unknown error')
-                // Send error status
+                console.log('[Chat] Error code:', genResult.code)
+                // Send error status with all details (including balance info if applicable)
                 const errorData = JSON.stringify({
                   generation: {
                     status: 'error',
                     model: genBlock.model,
                     params: genBlock.params,
                     error: genResult.error || 'Generation failed',
+                    code: genResult.code,
+                    required: genResult.required,
+                    available: genResult.available,
                   }
                 })
                 controller.enqueue(encoder.encode(`data: ${errorData}\n\n`))

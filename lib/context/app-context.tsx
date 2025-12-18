@@ -9,6 +9,35 @@ import { saveToStorage, loadFromStorage, STORAGE_KEYS, addRecentModel, getRecent
 // App Context - Global App State
 // ============================================
 
+// Balance check response from estimate-cost API
+export interface CostEstimate {
+  model: string
+  modelSlug: string
+  costCents: number
+  maxCostCents: number
+  userBalance: number
+  hasLifetimeAccess: boolean
+  affordable: boolean
+  breakdown?: {
+    baseCostCents: number
+    sequentialMode?: boolean
+    maxImages?: number
+    maxCostCents?: number
+    duration?: number
+    resolution?: string
+    costPerSecond?: number
+    resolutionMultiplier?: number
+  }
+}
+
+// Insufficient balance modal state
+export interface InsufficientBalanceState {
+  isOpen: boolean
+  required: number
+  available: number
+  modelName?: string
+}
+
 interface AppContextType {
   // Models
   models: AIModel[]
@@ -29,6 +58,23 @@ interface AppContextType {
   // Loading
   isLoading: boolean
   setIsLoading: (loading: boolean) => void
+
+  // Balance & Cost
+  userBalance: number
+  setUserBalance: (balance: number) => void
+  hasLifetimeAccess: boolean
+  setHasLifetimeAccess: (has: boolean) => void
+  insufficientBalanceModal: InsufficientBalanceState
+  showInsufficientBalance: (required: number, available: number, modelName?: string) => void
+  hideInsufficientBalance: () => void
+  estimateCost: (params: {
+    model: string
+    duration?: number
+    resolution?: string
+    generateAudio?: boolean
+    sequentialImageGeneration?: 'disabled' | 'auto'
+    maxImages?: number
+  }) => Promise<CostEstimate | null>
 }
 
 const defaultSettings: AppSettings = {
@@ -75,6 +121,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Loading state
   const [isLoading, setIsLoading] = useState(false)
 
+  // Balance state
+  const [userBalance, setUserBalance] = useState(0)
+  const [hasLifetimeAccess, setHasLifetimeAccess] = useState(false)
+
+  // Insufficient balance modal state
+  const [insufficientBalanceModal, setInsufficientBalanceModal] = useState<InsufficientBalanceState>({
+    isOpen: false,
+    required: 0,
+    available: 0,
+    modelName: undefined,
+  })
+
   // Set selected model with recent tracking
   const setSelectedModel = useCallback((model: AIModel) => {
     setSelectedModelState(model)
@@ -111,6 +169,74 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setToasts(prev => prev.filter(t => t.id !== id))
   }, [])
 
+  // Show insufficient balance modal
+  const showInsufficientBalance = useCallback((required: number, available: number, modelName?: string) => {
+    setInsufficientBalanceModal({
+      isOpen: true,
+      required,
+      available,
+      modelName,
+    })
+  }, [])
+
+  // Hide insufficient balance modal
+  const hideInsufficientBalance = useCallback(() => {
+    setInsufficientBalanceModal(prev => ({
+      ...prev,
+      isOpen: false,
+    }))
+  }, [])
+
+  // Estimate cost before generation
+  const estimateCost = useCallback(async (params: {
+    model: string
+    duration?: number
+    resolution?: string
+    generateAudio?: boolean
+    sequentialImageGeneration?: 'disabled' | 'auto'
+    maxImages?: number
+  }): Promise<CostEstimate | null> => {
+    try {
+      // Build headers with Whop auth
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      }
+
+      if (typeof window !== 'undefined') {
+        const devToken = localStorage.getItem('whop-dev-token')
+        const devUserId = localStorage.getItem('whop-dev-user-id')
+        if (devToken) headers['x-whop-user-token'] = devToken
+        if (devUserId) headers['x-whop-user-id'] = devUserId
+      }
+
+      const response = await fetch('/api/estimate-cost', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(params),
+      })
+
+      if (!response.ok) {
+        console.error('Failed to estimate cost:', await response.text())
+        return null
+      }
+
+      const data = await response.json()
+
+      // Update local balance state from response
+      if (data.userBalance !== undefined) {
+        setUserBalance(data.userBalance)
+      }
+      if (data.hasLifetimeAccess !== undefined) {
+        setHasLifetimeAccess(data.hasLifetimeAccess)
+      }
+
+      return data as CostEstimate
+    } catch (error) {
+      console.error('Error estimating cost:', error)
+      return null
+    }
+  }, [])
+
   const value: AppContextType = {
     models,
     selectedModel,
@@ -124,6 +250,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     showToast: addToast, // Alias
     isLoading,
     setIsLoading,
+    // Balance & Cost
+    userBalance,
+    setUserBalance,
+    hasLifetimeAccess,
+    setHasLifetimeAccess,
+    insufficientBalanceModal,
+    showInsufficientBalance,
+    hideInsufficientBalance,
+    estimateCost,
   }
 
   return (

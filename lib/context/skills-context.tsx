@@ -192,7 +192,7 @@ const INTENT_SKILL_MAP: Record<string, string[]> = {
   modify: ['edit', 'retouch'],
   change: ['edit'],
   remove: ['edit'],
-  background: ['edit', 'product-photo'],
+  'background-edit': ['edit', 'product-photo'],
 }
 
 interface SkillsContextValue {

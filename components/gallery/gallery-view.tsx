@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Images, Users, Search, Heart, Download, MoreHorizontal, Sparkles, Trash2, MessageSquare, Copy, X, Loader2 } from 'lucide-react'
+import { Images, Users, Search, Heart, Download, MoreHorizontal, Sparkles, Trash2, MessageSquare, Copy, X, Loader2, ChevronLeft, ChevronRight, Play } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { MasonryGrid, MasonryItem } from '@/components/ui/masonry-grid'
 import { useGeneration, Generation } from '@/lib/context/generation-context'
@@ -27,6 +27,11 @@ interface CreatorGalleryImage {
 
 type Tab = 'library' | 'community'
 
+// Helper to detect video files
+const isVideoUrl = (url: string) => {
+  return url?.toLowerCase().match(/\.(mp4|webm|mov|avi)($|\?)/) !== null
+}
+
 // Image Detail Modal Component
 interface ImageDetailModalProps {
   generation: Generation
@@ -37,6 +42,11 @@ interface ImageDetailModalProps {
 function ImageDetailModal({ generation, onClose, onDelete }: ImageDetailModalProps) {
   const { showToast } = useApp()
   const [isDownloading, setIsDownloading] = useState(false)
+  const [currentImageIndex, setCurrentImageIndex] = useState(0)
+
+  const outputUrls = generation.output_urls || []
+  const hasMultipleImages = outputUrls.length > 1
+  const currentImageUrl = outputUrls[currentImageIndex] || ''
 
   const handleCopyPrompt = useCallback(async () => {
     try {
@@ -48,17 +58,16 @@ function ImageDetailModal({ generation, onClose, onDelete }: ImageDetailModalPro
   }, [generation.prompt, showToast])
 
   const handleDownload = useCallback(async () => {
-    const imageUrl = generation.output_urls?.[0]
-    if (!imageUrl) return
+    if (!currentImageUrl) return
     setIsDownloading(true)
     try {
-      const response = await fetch(imageUrl)
+      const response = await fetch(currentImageUrl)
       const blob = await response.blob()
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
       const modelName = generation.studio_models?.name || generation.model_slug
-      a.download = `skinny-studio-${modelName}-${Date.now()}.${blob.type.split('/')[1] || 'png'}`
+      a.download = `skinny-studio-${modelName}-${currentImageIndex + 1}-${Date.now()}.${blob.type.split('/')[1] || 'png'}`
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
@@ -68,7 +77,15 @@ function ImageDetailModal({ generation, onClose, onDelete }: ImageDetailModalPro
     } finally {
       setIsDownloading(false)
     }
-  }, [generation])
+  }, [currentImageUrl, currentImageIndex, generation])
+
+  const goToPrevImage = useCallback(() => {
+    setCurrentImageIndex((prev) => (prev > 0 ? prev - 1 : outputUrls.length - 1))
+  }, [outputUrls.length])
+
+  const goToNextImage = useCallback(() => {
+    setCurrentImageIndex((prev) => (prev < outputUrls.length - 1 ? prev + 1 : 0))
+  }, [outputUrls.length])
 
   const handleDelete = useCallback(() => {
     onDelete()
@@ -100,13 +117,49 @@ function ImageDetailModal({ generation, onClose, onDelete }: ImageDetailModalPro
         </button>
 
         <div className="flex flex-col md:flex-row max-h-[90vh]">
-          {/* Image */}
-          <div className="flex-1 bg-black flex items-center justify-center p-4 min-h-[300px]">
-            <img
-              src={generation.output_urls?.[0] || ''}
-              alt={generation.prompt}
-              className="max-w-full max-h-[60vh] object-contain rounded-lg"
-            />
+          {/* Image or Video */}
+          <div className="flex-1 bg-black flex items-center justify-center p-4 min-h-[300px] relative">
+            {isVideoUrl(currentImageUrl) ? (
+              <video
+                src={currentImageUrl}
+                className="max-w-full max-h-[60vh] object-contain rounded-lg"
+                controls
+                autoPlay
+                loop
+                muted
+              />
+            ) : (
+              <img
+                src={currentImageUrl}
+                alt={generation.prompt}
+                className="max-w-full max-h-[60vh] object-contain rounded-lg"
+              />
+            )}
+
+            {/* Navigation arrows for multi-image */}
+            {hasMultipleImages && (
+              <>
+                <button
+                  onClick={goToPrevImage}
+                  className="absolute left-4 top-1/2 -translate-y-1/2 p-2 rounded-full bg-black/60 text-white/80 hover:bg-black/80 hover:text-white transition-colors"
+                >
+                  <ChevronLeft size={24} />
+                </button>
+                <button
+                  onClick={goToNextImage}
+                  className="absolute right-4 top-1/2 -translate-y-1/2 p-2 rounded-full bg-black/60 text-white/80 hover:bg-black/80 hover:text-white transition-colors"
+                >
+                  <ChevronRight size={24} />
+                </button>
+
+                {/* Image counter */}
+                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full bg-black/60 backdrop-blur-sm">
+                  <span className="text-xs font-medium text-white">
+                    {currentImageIndex + 1} / {outputUrls.length}
+                  </span>
+                </div>
+              </>
+            )}
           </div>
 
           {/* Details sidebar */}
@@ -173,13 +226,17 @@ function ImageDetailModal({ generation, onClose, onDelete }: ImageDetailModalPro
 // Library Card for user's generations
 interface LibraryCardProps {
   generation: Generation
+  imageUrl: string
+  imageIndex: number
+  totalImages: number
   onClick: () => void
   onDelete: () => void
 }
 
-function LibraryCard({ generation, onClick, onDelete }: LibraryCardProps) {
+function LibraryCard({ generation, imageUrl, imageIndex, totalImages, onClick, onDelete }: LibraryCardProps) {
   const [isHovered, setIsHovered] = useState(false)
   const modelName = generation.studio_models?.name || generation.model_slug
+  const isVideo = isVideoUrl(imageUrl)
 
   return (
     <motion.div
@@ -189,13 +246,45 @@ function LibraryCard({ generation, onClick, onDelete }: LibraryCardProps) {
       whileHover={{ y: -4 }}
       onClick={onClick}
     >
-      {/* Image */}
-      <img
-        src={generation.output_urls?.[0] || ''}
-        alt={generation.prompt}
-        className="w-full h-auto"
-        loading="lazy"
-      />
+      {/* Image or Video */}
+      {isVideo ? (
+        <div className="relative">
+          <video
+            src={imageUrl}
+            className="w-full h-auto"
+            muted
+            loop
+            playsInline
+            onMouseEnter={(e) => e.currentTarget.play()}
+            onMouseLeave={(e) => {
+              e.currentTarget.pause()
+              e.currentTarget.currentTime = 0
+            }}
+          />
+          {/* Video play icon overlay */}
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="w-12 h-12 rounded-full bg-black/60 flex items-center justify-center group-hover:opacity-0 transition-opacity">
+              <Play size={20} className="text-white ml-1" fill="white" />
+            </div>
+          </div>
+        </div>
+      ) : (
+        <img
+          src={imageUrl}
+          alt={generation.prompt}
+          className="w-full h-auto"
+          loading="lazy"
+        />
+      )}
+
+      {/* Multi-image badge */}
+      {totalImages > 1 && (
+        <div className="absolute top-3 right-3">
+          <span className="px-2 py-1 rounded-full bg-black/60 backdrop-blur-sm text-[10px] font-bold text-white">
+            {imageIndex + 1}/{totalImages}
+          </span>
+        </div>
+      )}
 
       {/* Overlay on hover */}
       <AnimatePresence>
@@ -417,6 +506,18 @@ export function GalleryView() {
     )
   }, [userGenerations, searchQuery])
 
+  // Flatten generations to show each image separately (for multi-image generations)
+  const flattenedImages = useMemo(() => {
+    return filteredUserGenerations.flatMap(gen =>
+      (gen.output_urls || []).map((url, idx) => ({
+        generation: gen,
+        url,
+        index: idx,
+        totalImages: gen.output_urls?.length || 1
+      }))
+    )
+  }, [filteredUserGenerations])
+
   // Filter community generations by search
   const filteredCommunityGenerations = useMemo(() => {
     if (!searchQuery) return creatorGalleryImages
@@ -487,14 +588,17 @@ export function GalleryView() {
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
         {activeTab === 'library' ? (
           // User's Library
-          filteredUserGenerations.length > 0 ? (
+          flattenedImages.length > 0 ? (
             <MasonryGrid>
-              {filteredUserGenerations.map((generation) => (
-                <MasonryItem key={generation.id}>
+              {flattenedImages.map((item) => (
+                <MasonryItem key={`${item.generation.id}-${item.index}`}>
                   <LibraryCard
-                    generation={generation}
-                    onClick={() => setSelectedGeneration(generation)}
-                    onDelete={() => handleDeleteGeneration(generation.id)}
+                    generation={item.generation}
+                    imageUrl={item.url}
+                    imageIndex={item.index}
+                    totalImages={item.totalImages}
+                    onClick={() => setSelectedGeneration(item.generation)}
+                    onDelete={() => handleDeleteGeneration(item.generation.id)}
                   />
                 </MasonryItem>
               ))}

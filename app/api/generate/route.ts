@@ -2,6 +2,7 @@ import Replicate from 'replicate'
 import { NextResponse } from 'next/server'
 import { sbAdmin } from '@/lib/supabaseAdmin'
 import { getWhopAuthFromHeaders, verifyWhopTokenAndGetProfile, hasWhopAuth } from '@/lib/whop'
+import { rateLimit, getRateLimitKey, RATE_LIMITS } from '@/lib/rate-limit'
 import { v4 as uuidv4 } from 'uuid'
 
 export const runtime = 'nodejs'
@@ -32,6 +33,8 @@ interface GenerateRequest {
   // Seedream 4.5 sequential generation params
   sequentialImageGeneration?: 'disabled' | 'auto'
   maxImages?: number
+  // When true, return immediately with generationId for frontend polling (for Netlify compatibility)
+  noWait?: boolean
 }
 
 // Calculate cost for video models (per-second pricing)
@@ -68,14 +71,10 @@ function calculateVideoCost(
   return Math.ceil(baseCostPerSecond * duration * resolutionMultiplier)
 }
 
-// Initialize Replicate with API key
-function getReplicateClient() {
-  const apiKey = process.env.REPLICATE_API_TOKEN
-  if (!apiKey) {
-    throw new Error('REPLICATE_API_TOKEN not configured')
-  }
-  return new Replicate({ auth: apiKey })
-}
+// Initialize Replicate client
+const replicate = new Replicate({
+  auth: process.env.REPLICATE_API_TOKEN,
+})
 
 // Download image from URL and upload to Supabase storage
 async function saveImageToStorage(imageUrl: string, userId?: string): Promise<string> {
@@ -232,8 +231,27 @@ export async function POST(request: Request) {
       }
     }
 
+    // === RATE LIMIT CHECK ===
+    const rateLimitKey = getRateLimitKey(request, whopUserId, 'generate')
+    const { success: rateLimitOk, remaining, reset } = rateLimit(
+      rateLimitKey,
+      RATE_LIMITS.generate.limit,
+      RATE_LIMITS.generate.windowMs
+    )
+
+    if (!rateLimitOk) {
+      return NextResponse.json(
+        {
+          error: 'Too many generation requests. Please try again later.',
+          code: 'RATE_LIMITED',
+          retryAfter: Math.ceil((reset - Date.now()) / 1000)
+        },
+        { status: 429, headers: { 'Retry-After': '60' } }
+      )
+    }
+
     const body = await request.json() as GenerateRequest
-    const { model, prompt, params = {}, referenceImages, images, conversationId, messageId, duration, resolution, generateAudio, sequentialImageGeneration, maxImages } = body
+    const { model, prompt, params = {}, referenceImages, images, conversationId, messageId, duration, resolution, generateAudio, sequentialImageGeneration, maxImages, noWait } = body
 
     if (!prompt) {
       return NextResponse.json({ error: 'Prompt is required' }, { status: 400 })
@@ -292,19 +310,41 @@ export async function POST(request: Request) {
     }
 
     // === BALANCE CHECK (skip for lifetime users or free models) ===
-    if (whopUserId && !hasLifetimeAccess && costCents > 0 && balanceCents < costCents) {
-      return NextResponse.json(
-        {
-          error: 'Insufficient balance',
-          required: costCents,
-          available: balanceCents,
-          code: 'INSUFFICIENT_BALANCE'
-        },
-        { status: 402 }
-      )
+    // Calculate MAX possible cost BEFORE starting the generation
+    // This prevents overcharging when Seedream 4.5 generates multiple images
+    let maxPossibleCost = costCents
+
+    // Sequential generation (Seedream 4.5): multiply by max images requested
+    if (model === 'seedream-4.5' && sequentialImageGeneration === 'auto' && maxImages && maxImages > 1) {
+      maxPossibleCost = costCents * maxImages
+      console.log(`[Generate] Seedream 4.5 max cost: ${maxImages} images × ${costCents}¢ = ${maxPossibleCost}¢`)
     }
 
-    const replicate = getReplicateClient()
+    // Fetch FRESH balance from database (not cached) for accurate check
+    if (whopUserId && !hasLifetimeAccess && maxPossibleCost > 0) {
+      const { data: freshProfile } = await sbAdmin
+        .from("user_profiles")
+        .select("balance_cents")
+        .eq("id", userProfileId)
+        .single()
+
+      const freshBalance = freshProfile?.balance_cents || 0
+
+      if (freshBalance < maxPossibleCost) {
+        return NextResponse.json(
+          {
+            error: 'Insufficient balance',
+            required: maxPossibleCost,
+            available: freshBalance,
+            code: 'INSUFFICIENT_BALANCE'
+          },
+          { status: 402 }
+        )
+      }
+
+      // Update balanceCents to use fresh value for later deduction
+      balanceCents = freshBalance
+    }
 
     // Build input from model's default parameters merged with user params
     const input: Record<string, any> = {
@@ -531,17 +571,32 @@ export async function POST(request: Request) {
     // Create prediction (non-blocking start)
     console.log('[Generate] Creating prediction for:', modelOwner, modelName, modelVersion ? `version: ${modelVersion}` : 'latest')
 
+    // Webhook URL for Replicate to call when prediction completes
+    // This ensures database gets updated even if this function times out
+    const webhookUrl = process.env.NEXT_PUBLIC_APP_URL
+      ? `${process.env.NEXT_PUBLIC_APP_URL}/api/replicate-webhook`
+      : undefined
+    console.log('[Generate] Webhook URL:', webhookUrl || 'not configured')
+
     let prediction
     if (modelVersion) {
       prediction = await replicate.predictions.create({
         version: modelVersion,
         input,
+        ...(webhookUrl && {
+          webhook: webhookUrl,
+          webhook_events_filter: ['completed'],
+        }),
       })
     } else {
       // For models without version, use the model identifier format
       prediction = await replicate.predictions.create({
         model: `${modelOwner}/${modelName}`,
         input,
+        ...(webhookUrl && {
+          webhook: webhookUrl,
+          webhook_events_filter: ['completed'],
+        }),
       })
     }
 
@@ -555,6 +610,19 @@ export async function POST(request: Request) {
         .update({ replicate_prediction_id: prediction.id })
         .eq("id", generationId)
       console.log('[Generate] Saved prediction ID to generation:', generationId)
+    }
+
+    // If noWait is true, return immediately for frontend polling (Netlify compatibility)
+    // This prevents SSE timeout issues on Netlify where functions may timeout
+    if (noWait) {
+      console.log('[Generate] noWait mode - returning immediately with generationId:', generationId)
+      return NextResponse.json({
+        success: false,
+        pending: true,
+        generationId,
+        predictionId: prediction.id,
+        message: 'Generation started. Frontend will poll for completion.',
+      })
     }
 
     // Wait for prediction to complete with timeout
@@ -700,7 +768,7 @@ export async function POST(request: Request) {
           replicate_status: 'succeeded',
           completed_at: new Date().toISOString(),
           cost_cents: finalCostCents,
-          metadata: {
+          output_metadata: {
             images_generated: numImagesGenerated,
             storage_pending: true,  // Flag that we still need to upload to storage
             ...(model === 'seedream-4.5' && sequentialImageGeneration === 'auto' && {
@@ -762,7 +830,7 @@ export async function POST(request: Request) {
         .from("generations")
         .update({
           output_urls: finalOutputUrls,
-          metadata: {
+          output_metadata: {
             images_generated: numImagesGenerated,
             storage_pending: !allUploadsSucceeded,  // True if any uploads failed (needs migration)
             storage_complete: allUploadsSucceeded,
@@ -782,18 +850,25 @@ export async function POST(request: Request) {
       }
     }
 
-    // === DEDUCT BALANCE (only if not lifetime and cost > 0) ===
+    // === DEDUCT BALANCE ATOMICALLY (only if not lifetime and cost > 0) ===
+    // Uses row-level locking to prevent race conditions
     if (userProfileId && !hasLifetimeAccess && finalCostCents > 0) {
-      const { error: deductError } = await sbAdmin
-        .from("user_profiles")
-        .update({
-          balance_cents: balanceCents - finalCostCents,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", userProfileId)
+      const { data: deductResult, error: deductError } = await sbAdmin.rpc(
+        'deduct_balance_safely',
+        {
+          p_user_id: userProfileId,
+          p_amount: finalCostCents
+        }
+      )
 
       if (deductError) {
-        console.error("Failed to deduct balance:", deductError)
+        console.error("Failed to call deduct_balance_safely:", deductError)
+      } else if (!deductResult?.success) {
+        // This shouldn't happen since we pre-checked, but log it
+        console.error("Balance deduction failed:", deductResult?.error)
+      } else {
+        // Update local balanceCents with the new balance for response
+        balanceCents = deductResult.new_balance
       }
     }
 
@@ -802,13 +877,16 @@ export async function POST(request: Request) {
     if (whopUserId) {
       const effectiveCost = hasLifetimeAccess ? 0 : finalCostCents
 
+      // Convert cents to dollars for credit_transactions table (amount column is in dollars)
+      const amountInDollars = effectiveCost / 100
+
       const { error: txError } = await sbAdmin.from("credit_transactions").insert({
         user_id: whopUserId,
-        type: "usage",
-        amount: -effectiveCost,
-        amount_charged: effectiveCost,
+        type: "PersonaForge",  // Use PersonaForge type to avoid app_id constraint
+        amount: -amountInDollars,
+        amount_charged: amountInDollars,
         app_name: "Skinny Studio",
-        task: studioModel.category === 'video' ? 'video_generation' : 'image_generation',
+        task: studioModel.category === 'video' ? 'Video Generation' : 'Image Generation',
         status: "completed",
         preview: imageUrl,
         metadata: {
@@ -844,6 +922,23 @@ export async function POST(request: Request) {
       if (txError) {
         console.error("Failed to log credit transaction:", txError)
       }
+    }
+
+    // === MARK BILLING AS COMPLETE ===
+    // This flag tells the webhook not to re-bill if it arrives after us
+    if (generationId) {
+      await sbAdmin
+        .from("generations")
+        .update({
+          output_metadata: {
+            images_generated: numImagesGenerated,
+            storage_complete: true,
+            billing_complete: true,
+            billed_at: new Date().toISOString(),
+            billed_amount_cents: hasLifetimeAccess ? 0 : finalCostCents,
+          },
+        })
+        .eq("id", generationId)
     }
 
     return NextResponse.json({

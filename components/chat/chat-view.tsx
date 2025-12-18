@@ -8,10 +8,12 @@ import { Key, ExternalLink, AlertCircle, X, Camera, Palette, Share2, Play } from
 import { useChat, SkillForApi, SkillCreationData } from '@/lib/context/chat-context'
 import { useSkills } from '@/lib/context/skills-context'
 import { useGeneration } from '@/lib/context/generation-context'
+import { useApp } from '@/lib/context/app-context'
 import { ChatMessage } from './chat-message'
 import { ChatInput } from './chat-input'
 import { hasApiKey } from '@/lib/api-settings'
 import { EtherealBackground } from '@/components/ui/ethereal-background'
+import { StoryboardView } from '@/components/storyboard/storyboard-view'
 import { toast } from 'sonner'
 
 // Welcome suggestions - no emojis, use icons instead
@@ -110,26 +112,26 @@ function WelcomeScreen({ onSuggestionClick }: { onSuggestionClick: (prompt: stri
           <Image
             src="/skinny-logo.svg"
             alt="Skinny Studio"
-            width={56}
-            height={56}
-            className="drop-shadow-[0_0_40px_rgba(214,252,81,0.4)]"
+            width={280}
+            height={280}
+            className="drop-shadow-[0_0_60px_rgba(214,252,81,0.5)]"
             priority
           />
         </div>
 
         {/* Title */}
-        <h1 className="text-3xl font-medium text-white mb-2 tracking-tight animate-slideUp">
-          How can I help today?
+        <h1 className="text-5xl font-medium text-white mb-2 tracking-tight animate-slideUp">
+          Ready when you are
         </h1>
 
         {/* Animated underline */}
         <div
-          className="h-px w-32 bg-gradient-to-r from-transparent via-white/20 to-transparent mb-4 animate-expandWidth"
+          className="h-px w-32 bg-gradient-to-r from-transparent via-skinny-yellow/40 to-transparent mb-4 animate-expandWidth"
         />
 
         {/* Subtitle */}
         <p className="text-sm text-white/40 mb-8 animate-slideUp animation-delay-100">
-          Your AI creative director for images & video
+          Your All in One Creative AI Assistant
         </p>
 
         {/* Suggestion Pills - CSS transitions only, no Framer Motion */}
@@ -162,10 +164,19 @@ function WelcomeScreen({ onSuggestionClick }: { onSuggestionClick: (prompt: stri
 }
 
 export function ChatView() {
-  const { state, sendMessage, clearError, setOnSkillCreation, setOnGenerationComplete } = useChat()
+  const { state, sendMessage, clearError, setOnSkillCreation, setOnGenerationComplete, setOnInsufficientBalance, platformEnabled } = useChat()
   const { messages, isLoading, error, errorCode } = state
   const { parseSkillReferences, addSkill } = useSkills()
   const { refreshGenerations } = useGeneration()
+  const { showInsufficientBalance, selectedModel } = useApp()
+
+  // Check if storyboard mode is selected
+  const isStoryboardMode = selectedModel?.id === 'storyboard-mode'
+
+  // If storyboard mode, render the StoryboardView instead
+  if (isStoryboardMode) {
+    return <StoryboardView />
+  }
 
   // Wire up skill creation callback - when AI creates a skill, add it to the skills library
   useEffect(() => {
@@ -197,34 +208,49 @@ export function ChatView() {
       }
     }
 
-    setOnSkillCreation(handleSkillCreation)
+    // Wrap in arrow function to prevent React from calling it as an updater function
+    setOnSkillCreation(() => handleSkillCreation)
 
     // Cleanup on unmount
     return () => {
-      setOnSkillCreation(null)
+      setOnSkillCreation(() => null)
     }
   }, [addSkill, setOnSkillCreation])
 
   // Wire up generation completion callback - refresh the generations list when a new generation completes
   useEffect(() => {
-    setOnGenerationComplete(() => {
+    // Wrap in double arrow function: outer returns the callback to store, inner is the actual callback
+    setOnGenerationComplete(() => () => {
       // Refresh generations to include the newly created one from the database
       refreshGenerations()
     })
 
     return () => {
-      setOnGenerationComplete(null)
+      setOnGenerationComplete(() => null)
     }
   }, [refreshGenerations, setOnGenerationComplete])
+
+  // Wire up insufficient balance callback - show modal when generation fails due to balance
+  useEffect(() => {
+    // Wrap in double arrow function: outer returns the callback to store, inner is the actual callback
+    setOnInsufficientBalance(() => (required: number, available: number, modelName?: string) => {
+      console.log('[ChatView] Showing insufficient balance modal:', { required, available, modelName })
+      showInsufficientBalance(required, available, modelName)
+    })
+
+    return () => {
+      setOnInsufficientBalance(() => null)
+    }
+  }, [showInsufficientBalance, setOnInsufficientBalance])
 
   const [showApiKeyBanner, setShowApiKeyBanner] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
 
-  // Check for API key on mount
+  // Check for API key on mount - don't show banner if platform mode is enabled
   useEffect(() => {
-    setShowApiKeyBanner(!hasApiKey())
-  }, [])
+    setShowApiKeyBanner(!hasApiKey() && !platformEnabled)
+  }, [platformEnabled])
 
   // Auto-scroll to bottom when new messages arrive or loading state changes
   useEffect(() => {
@@ -256,6 +282,41 @@ export function ChatView() {
     // Don't preload skills for suggestions - user must explicitly mention with @
     sendMessage(prompt, undefined, undefined)
   }, [sendMessage])
+
+  // Quick action handlers for confirmation messages
+  const handleQuickGenerate = useCallback(() => {
+    // Send a confirmation message to trigger generation
+    sendMessage('Yes, generate it!', undefined, undefined)
+  }, [sendMessage])
+
+  const handleEditPrompt = useCallback(() => {
+    // Focus the input so user can type their edit
+    // The input component will handle the focus via its own ref
+    const input = document.querySelector('textarea[placeholder*="conversation"], textarea[placeholder*="create"]') as HTMLTextAreaElement
+    if (input) {
+      input.focus()
+      input.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+  }, [])
+
+  // Find the index of the last assistant message that's a confirmation (to show buttons only on that one)
+  const lastConfirmationIndex = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i]
+      if (msg.role === 'assistant' && !msg.generation && !msg.isStreaming && msg.content) {
+        const content = msg.content.toLowerCase()
+        if (
+          content.includes('estimated cost') ||
+          content.includes('ready to create') ||
+          content.includes('ready to generate') ||
+          (content.includes('$0.') && (content.includes('does this') || content.includes('look good') || content.includes('shall i')))
+        ) {
+          return i
+        }
+      }
+    }
+    return -1
+  })()
 
   const hasMessages = messages.length > 0
 
@@ -297,8 +358,14 @@ export function ChatView() {
               animate={{ opacity: 1 }}
               className="max-w-3xl mx-auto pt-6 px-4 pb-40"
             >
-              {messages.map((message) => (
-                <ChatMessage key={message.id} message={message} />
+              {messages.map((message, index) => (
+                <ChatMessage
+                  key={message.id}
+                  message={message}
+                  onQuickGenerate={handleQuickGenerate}
+                  onEditPrompt={handleEditPrompt}
+                  showQuickActions={index === lastConfirmationIndex && !isLoading}
+                />
               ))}
 
               <div ref={messagesEndRef} />
@@ -318,8 +385,8 @@ export function ChatView() {
         />
       )}
 
-      {/* Input Area - positioned above the gradient */}
-      <div className="relative z-20 flex-shrink-0 bg-black">
+      {/* Input Area - floating over background */}
+      <div className="relative z-20 flex-shrink-0">
         <ChatInput
           onSend={handleSend}
           isLoading={isLoading}

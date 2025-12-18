@@ -52,13 +52,9 @@ export async function verifyWhopTokenAndGetProfile(
           Buffer.from(tokenParts[1], "base64").toString()
         );
 
-        console.log("Payload from token:", payload);
-
         if (payload.sub || payload.user_id || payload.id) {
           const userId = payload.sub || payload.user_id || payload.id;
           const uuid = generateUUIDFromString(userId);
-
-          console.log("userId from token:", userId);
 
           try {
             const { WhopServerSdk } = await import("@whop/api");
@@ -71,10 +67,8 @@ export async function verifyWhopTokenAndGetProfile(
             try {
               whopUser = await sdk.users.getUser({ userId });
             } catch (e) {
-              console.warn("Whop API failed, falling back:", e);
+              // Whop API unavailable, continue with JWT data
             }
-
-            console.log("whopUser from token:", whopUser);
 
             return {
               id: uuid,
@@ -83,8 +77,7 @@ export async function verifyWhopTokenAndGetProfile(
               unique_id: whopUser?.id || null,
             };
           } catch (whopError) {
-            console.log("Could not fetch from Whop API, using JWT data:", whopError);
-
+            // Could not fetch from Whop API, using JWT data
             return {
               id: uuid,
               email: payload.email || null,
@@ -94,17 +87,15 @@ export async function verifyWhopTokenAndGetProfile(
           }
         }
       } catch (jwtError) {
-        console.log("JWT decode failed, using fallback approach:", jwtError);
+        // JWT decode failed, using fallback approach
       }
     }
 
     // Fallback: Use the hintedId if available
     if (hintedId) {
-      console.log("Using hintedId as fallback:", hintedId);
       const uuid = generateUUIDFromString(hintedId);
 
       try {
-        console.log("Fetching user data from Whop using hintedId...");
         const { WhopServerSdk } = await import("@whop/api");
         const sdk = WhopServerSdk({
           appId: process.env.NEXT_PUBLIC_WHOP_APP_ID!,
@@ -112,7 +103,6 @@ export async function verifyWhopTokenAndGetProfile(
         });
 
         const whopUser = await sdk.users.getUser({ userId: hintedId });
-        console.log("Got real Whop user data from hintedId:", whopUser);
 
         return {
           id: uuid,
@@ -121,8 +111,7 @@ export async function verifyWhopTokenAndGetProfile(
           unique_id: whopUser?.id || null,
         };
       } catch (whopError) {
-        console.log("Could not fetch from Whop API using hintedId:", whopError);
-
+        // Could not fetch from Whop API using hintedId
         return {
           id: uuid,
           email: null,
@@ -133,7 +122,6 @@ export async function verifyWhopTokenAndGetProfile(
     }
 
     // Final fallback: Generate UUID from token
-    console.log("No hintedId available, generating user ID from token...");
     const uuid = generateUUIDFromString(token);
 
     return {
@@ -143,12 +131,7 @@ export async function verifyWhopTokenAndGetProfile(
       unique_id: null,
     };
   } catch (error) {
-    console.error("Token processing failed:", error);
-    throw new Error(
-      `Whop verify failed: ${
-        error instanceof Error ? error.message : "Unknown error"
-      }`
-    );
+    throw new Error("Whop verification failed");
   }
 }
 
@@ -160,15 +143,6 @@ export async function getWhopAuthFromHeaders(): Promise<{
   const h = await headers();
   const token = h.get("x-whop-user-token") || "";
   const hintedId = h.get("x-whop-user-id") || undefined;
-
-  console.log("Headers received:", {
-    hasToken: !!token,
-    tokenLength: token.length,
-    tokenPrefix: token ? token.substring(0, 10) + "..." : "(empty)",
-    tokenSuffix: token ? "..." + token.substring(Math.max(0, token.length - 10)) : "(empty)",
-    hasHintedId: !!hintedId,
-    hintedId,
-  });
 
   if (!token) throw new Error("Missing x-whop-user-token");
 

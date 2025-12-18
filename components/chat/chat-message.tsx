@@ -1,9 +1,9 @@
 'use client'
 
-import { memo, useMemo } from 'react'
+import { memo, useMemo, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { cn } from '@/lib/utils'
-import { User, Bot, Copy, Check, Loader2, Image as ImageIcon, AlertCircle, Download, ExternalLink, Bookmark } from 'lucide-react'
+import { User, Bot, Copy, Check, Loader2, Image as ImageIcon, AlertCircle, Download, ExternalLink, Bookmark, Video, RefreshCw, MessageSquarePlus, Pencil, Sparkles, Play } from 'lucide-react'
 import { ChatMessage as ChatMessageType, ChatAttachment, GenerationResult } from '@/lib/context/chat-context'
 import { useState, useCallback } from 'react'
 import Image from 'next/image'
@@ -13,9 +13,125 @@ import { useApp } from '@/lib/context/app-context'
 import { useSkills } from '@/lib/context/skills-context'
 import { Skill } from '@/lib/types'
 
+// Smart image component that handles temporary URL failures
+// Falls back to permanent URL from database if temp URL fails
+function SmartImage({
+  src,
+  alt,
+  className,
+  generationId,
+  onLoadSuccess
+}: {
+  src: string
+  alt: string
+  className?: string
+  generationId?: string
+  onLoadSuccess?: () => void
+}) {
+  const [currentSrc, setCurrentSrc] = useState(src)
+  const [hasError, setHasError] = useState(false)
+  const [isRetrying, setIsRetrying] = useState(false)
+  const [retryCount, setRetryCount] = useState(0)
+  const { generations, refreshGenerations } = useGeneration()
+
+  // Try to find permanent URL from database
+  const findPermanentUrl = useCallback(() => {
+    // Look for a generation that might have this image
+    for (const gen of generations) {
+      if (gen.output_urls && gen.output_urls.length > 0) {
+        // Check if any permanent URL exists for this generation
+        // Match by checking if the generation was recent (within last 5 minutes)
+        const genTime = new Date(gen.created_at || 0).getTime()
+        const now = Date.now()
+        if (now - genTime < 5 * 60 * 1000) {
+          return gen.output_urls[0]
+        }
+      }
+    }
+    return null
+  }, [generations])
+
+  const handleError = useCallback(async () => {
+    if (retryCount >= 3) {
+      setHasError(true)
+      return
+    }
+
+    setIsRetrying(true)
+
+    // Wait a bit then refresh generations to get permanent URL
+    await new Promise(r => setTimeout(r, 2000))
+    await refreshGenerations()
+
+    // Try to find permanent URL
+    const permanentUrl = findPermanentUrl()
+    if (permanentUrl && permanentUrl !== currentSrc) {
+      setCurrentSrc(permanentUrl)
+      setRetryCount(prev => prev + 1)
+    } else {
+      // Retry same URL after delay (webhook might still be processing)
+      setRetryCount(prev => prev + 1)
+      setCurrentSrc(src + `?retry=${retryCount + 1}`)
+    }
+
+    setIsRetrying(false)
+  }, [retryCount, refreshGenerations, findPermanentUrl, currentSrc, src])
+
+  const handleLoad = useCallback(() => {
+    setHasError(false)
+    setIsRetrying(false)
+    onLoadSuccess?.()
+  }, [onLoadSuccess])
+
+  if (hasError) {
+    return (
+      <div className={cn("flex flex-col items-center justify-center bg-white/[0.02] rounded-xl p-8", className)}>
+        <AlertCircle className="w-8 h-8 text-white/30 mb-2" />
+        <p className="text-xs text-white/40">Image failed to load</p>
+        <button
+          onClick={() => {
+            setHasError(false)
+            setRetryCount(0)
+            setCurrentSrc(src)
+          }}
+          className="mt-2 text-xs text-skinny-yellow hover:underline flex items-center gap-1"
+        >
+          <RefreshCw size={10} />
+          Try again
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="relative">
+      {isRetrying && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/50 rounded-xl z-10">
+          <Loader2 className="w-6 h-6 text-skinny-yellow animate-spin" />
+        </div>
+      )}
+      <img
+        src={currentSrc}
+        alt={alt}
+        className={className}
+        loading="lazy"
+        onError={handleError}
+        onLoad={handleLoad}
+      />
+    </div>
+  )
+}
+
 // Strip generation blocks from display text
 function stripGenerationBlock(text: string): string {
   return text.replace(/```generate\s*\n[\s\S]*?\n```/g, '').trim()
+}
+
+// Helper to detect if a URL is a video
+function isVideoUrl(url: string): boolean {
+  const videoExtensions = ['.mp4', '.webm', '.mov', '.avi', '.mkv']
+  const lowerUrl = url.toLowerCase()
+  return videoExtensions.some(ext => lowerUrl.includes(ext))
 }
 
 // Skill mention component with hover tooltip
@@ -96,6 +212,9 @@ function renderWithSkillHighlights(content: string, skills: Skill[]): React.Reac
 
 interface ChatMessageProps {
   message: ChatMessageType
+  onQuickGenerate?: () => void
+  onEditPrompt?: () => void
+  showQuickActions?: boolean
 }
 
 // Inline Generation Card for chat
@@ -103,23 +222,80 @@ function GenerationInline({ generation }: { generation: GenerationResult }) {
   const { status, model, result, error, params } = generation
   const [isDownloading, setIsDownloading] = useState(false)
   const [isSaved, setIsSaved] = useState(false)
-  const { addGeneration, generations } = useGeneration()
+  const [recoveredGeneration, setRecoveredGeneration] = useState<Generation | null>(null)
+  const { addGeneration, generations, refreshGenerations } = useGeneration()
   const { showToast } = useApp()
+
+  // Recovery polling: when stuck in generating or pending state, poll the library
+  // to find the completed generation and display it
+  const isStuck = status === 'generating' || (status === 'complete' && result?.pending)
+
+  useEffect(() => {
+    if (!isStuck || recoveredGeneration) return
+
+    // Poll library every 5 seconds when stuck
+    const interval = setInterval(async () => {
+      console.log('[GenerationInline] Polling library for stuck generation recovery')
+      await refreshGenerations()
+    }, 5000)
+
+    // Also do an immediate refresh
+    refreshGenerations()
+
+    return () => clearInterval(interval)
+  }, [isStuck, recoveredGeneration, refreshGenerations])
+
+  // Try to find matching generation in library when stuck
+  useEffect(() => {
+    if (!isStuck || recoveredGeneration) return
+
+    // Find matching generation by model and prompt (within recent time window)
+    // Use params.prompt if available (from the generation request)
+    const searchPrompt = params?.prompt || result?.prompt
+    if (!searchPrompt) return
+
+    const match = generations.find(g =>
+      g.model_slug === model &&
+      g.prompt === searchPrompt &&
+      g.replicate_status === 'succeeded' &&
+      g.output_urls?.length > 0
+    )
+
+    if (match) {
+      console.log('[GenerationInline] Found recovered generation in library:', match.id)
+      setRecoveredGeneration(match)
+    }
+  }, [generations, model, params?.prompt, result?.prompt, isStuck, recoveredGeneration])
+
+  // If we recovered a generation, use its data
+  const effectiveResult = recoveredGeneration ? {
+    imageUrl: recoveredGeneration.output_urls[0],
+    outputUrls: recoveredGeneration.output_urls,
+    prompt: recoveredGeneration.prompt,
+    pending: false,
+  } : result
+  const effectiveStatus = recoveredGeneration ? 'complete' : status
+
+  // Get all output URLs (for sequential generation support)
+  const allOutputUrls = useMemo(() => {
+    if (!effectiveResult) return []
+    return effectiveResult.outputUrls || [effectiveResult.imageUrl]
+  }, [effectiveResult])
 
   // Check if already saved - compare against output_urls array
   const isAlreadySaved = useMemo(() => {
-    if (!result?.imageUrl) return false
-    return generations.some(g => g.output_urls?.includes(result.imageUrl))
-  }, [generations, result?.imageUrl])
+    if (!effectiveResult?.imageUrl) return false
+    return generations.some(g => g.output_urls?.includes(effectiveResult.imageUrl))
+  }, [generations, effectiveResult?.imageUrl])
 
   const handleSaveToLibrary = useCallback(() => {
-    if (!result?.imageUrl || isAlreadySaved || isSaved) return
+    if (!effectiveResult?.imageUrl || isAlreadySaved || isSaved) return
 
-    // Create generation matching the database schema
+    // Create generation matching the database schema - save ALL output URLs
     const newGeneration: Generation = {
       id: `gen_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      prompt: result.prompt,
-      output_urls: [result.imageUrl],
+      prompt: effectiveResult.prompt,
+      output_urls: allOutputUrls,
       model_slug: model,
       model_category: 'image',
       parameters: params,
@@ -129,14 +305,15 @@ function GenerationInline({ generation }: { generation: GenerationResult }) {
 
     addGeneration(newGeneration)
     setIsSaved(true)
-    showToast('success', 'Saved to Library')
-  }, [result, model, params, addGeneration, showToast, isAlreadySaved, isSaved])
+    showToast('success', `Saved ${allOutputUrls.length} image${allOutputUrls.length > 1 ? 's' : ''} to Library`)
+  }, [effectiveResult, model, params, addGeneration, showToast, isAlreadySaved, isSaved, allOutputUrls])
 
-  const handleDownload = useCallback(async () => {
-    if (!result?.imageUrl) return
+  const handleDownload = useCallback(async (urlToDownload?: string) => {
+    const downloadUrl = urlToDownload || effectiveResult?.imageUrl
+    if (!downloadUrl) return
     setIsDownloading(true)
     try {
-      const response = await fetch(result.imageUrl)
+      const response = await fetch(downloadUrl)
       const blob = await response.blob()
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -151,9 +328,9 @@ function GenerationInline({ generation }: { generation: GenerationResult }) {
     } finally {
       setIsDownloading(false)
     }
-  }, [result?.imageUrl, model])
+  }, [effectiveResult?.imageUrl, model])
 
-  if (status === 'planning') {
+  if (effectiveStatus === 'planning') {
     return (
       <div className="mt-3 p-4 rounded-xl backdrop-blur-sm bg-white/[0.02] border border-white/[0.05]">
         <div className="flex items-center gap-2 text-skinny-yellow">
@@ -164,88 +341,278 @@ function GenerationInline({ generation }: { generation: GenerationResult }) {
     )
   }
 
-  if (status === 'generating') {
+  if (effectiveStatus === 'generating') {
     return (
       <div className="mt-3 p-4 rounded-xl backdrop-blur-sm bg-white/[0.02] border border-white/[0.05]">
         <div className="flex items-center gap-2 text-skinny-yellow">
           <Loader2 size={16} className="animate-spin" />
           <span className="text-sm font-medium">Generating with {model}...</span>
         </div>
+        {/* Indeterminate progress bar - pulses to show activity without misleading duration */}
         <div className="mt-3 h-1.5 bg-white/[0.05] rounded-full overflow-hidden">
           <motion.div
-            className="h-full bg-skinny-yellow"
-            initial={{ width: '0%' }}
-            animate={{ width: '100%' }}
-            transition={{ duration: 30, ease: 'linear' }}
+            className="h-full bg-skinny-yellow w-1/3 rounded-full"
+            animate={{
+              x: ['0%', '200%', '0%'],
+            }}
+            transition={{
+              duration: 2,
+              repeat: Infinity,
+              ease: 'easeInOut'
+            }}
           />
         </div>
+        <p className="mt-2 text-[10px] text-white/30">This may take a moment depending on model complexity</p>
       </div>
     )
   }
 
-  if (status === 'error') {
+  if (effectiveStatus === 'error') {
+    const isBalanceError = generation.code === 'INSUFFICIENT_BALANCE'
+    const required = generation.required || 0
+    const available = generation.available || 0
+
     return (
-      <div className="mt-3 p-4 rounded-xl bg-red-500/10 border border-red-500/20">
-        <div className="flex items-center gap-2 text-red-400">
+      <div className={cn(
+        "mt-3 p-4 rounded-xl",
+        isBalanceError ? "bg-amber-500/10 border border-amber-500/20" : "bg-red-500/10 border border-red-500/20"
+      )}>
+        <div className={cn(
+          "flex items-center gap-2",
+          isBalanceError ? "text-amber-400" : "text-red-400"
+        )}>
           <AlertCircle size={16} />
-          <span className="text-sm font-medium">Generation failed</span>
+          <span className="text-sm font-medium">
+            {isBalanceError ? 'Insufficient credits' : 'Generation failed'}
+          </span>
         </div>
-        {error && <p className="mt-2 text-xs text-red-400/80">{error}</p>}
+        {isBalanceError ? (
+          <p className="mt-2 text-xs text-amber-400/80">
+            This generation costs ${(required / 100).toFixed(2)} but you only have ${(available / 100).toFixed(2)} available.
+          </p>
+        ) : (
+          error && <p className="mt-2 text-xs text-red-400/80">{error}</p>
+        )}
       </div>
     )
   }
 
-  if (status === 'complete' && result) {
+  if (effectiveStatus === 'complete' && effectiveResult) {
+    // Handle pending state (generation still processing in background)
+    // Note: This should not trigger if we have a recovered generation
+    if (effectiveResult.pending || (!effectiveResult.imageUrl && effectiveResult.message)) {
+      return (
+        <div className="mt-3 p-4 rounded-xl backdrop-blur-sm bg-white/[0.02] border border-white/[0.05]">
+          <div className="flex items-center gap-2 text-skinny-yellow">
+            <Loader2 size={16} className="animate-spin" />
+            <span className="text-sm font-medium">Processing with {model}...</span>
+          </div>
+          <p className="mt-2 text-xs text-white/50">
+            {effectiveResult.message || 'Generation is still processing. Check your Library in a moment.'}
+          </p>
+        </div>
+      )
+    }
+
+    const isMultiple = allOutputUrls.length > 1
+
     return (
       <div className="mt-3">
-        <div className="relative group rounded-xl overflow-hidden border border-white/[0.1] hover:border-skinny-yellow/30 transition-colors">
-          <img
-            src={result.imageUrl}
-            alt={result.prompt}
-            className="w-full max-w-md h-auto"
-            loading="lazy"
-          />
-          {/* Model badge */}
-          <div className="absolute top-2 left-2">
-            <span className="px-2 py-1 rounded-full bg-black/60 backdrop-blur-sm text-white/80 text-[10px] font-medium">
-              {model}
-            </span>
+        {/* Multiple images grid */}
+        {isMultiple ? (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-2 max-w-lg">
+              {allOutputUrls.map((url, index) => {
+                const isVideo = isVideoUrl(url)
+                return (
+                  <div key={index} className="relative group rounded-xl overflow-hidden border border-white/[0.1] hover:border-skinny-yellow/30 transition-colors">
+                    {isVideo ? (
+                      <video
+                        src={url}
+                        className="w-full h-auto"
+                        controls
+                        muted
+                        playsInline
+                      />
+                    ) : (
+                      <SmartImage
+                        src={url}
+                        alt={`${effectiveResult.prompt} - ${index + 1}`}
+                        className="w-full h-auto"
+                      />
+                    )}
+                    {/* Image number badge */}
+                    <span className="absolute top-2 left-2 px-2 py-1 rounded-full bg-black/60 backdrop-blur-sm text-white/80 text-[10px] font-medium">
+                      {index + 1}/{allOutputUrls.length}
+                    </span>
+                    {/* Individual action buttons */}
+                    <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      {/* Reference & Edit buttons - only for images, not videos */}
+                      {!isVideoUrl(url) && (
+                        <>
+                          <button
+                            onClick={() => {
+                              window.dispatchEvent(new CustomEvent('chat-add-attachment', {
+                                detail: { url, purpose: 'reference', name: `Reference from ${model}` }
+                              }))
+                            }}
+                            className="p-2 rounded-lg bg-black/60 backdrop-blur-sm text-white/80 hover:text-skinny-yellow hover:bg-black/80 transition-colors"
+                            title="Use as reference in chat"
+                          >
+                            <MessageSquarePlus size={12} />
+                          </button>
+                          <button
+                            onClick={() => {
+                              window.dispatchEvent(new CustomEvent('chat-add-attachment', {
+                                detail: { url, purpose: 'edit_target', name: `Edit ${model} output` }
+                              }))
+                            }}
+                            className="p-2 rounded-lg bg-black/60 backdrop-blur-sm text-white/80 hover:text-skinny-yellow hover:bg-black/80 transition-colors"
+                            title="Edit this image"
+                          >
+                            <Pencil size={12} />
+                          </button>
+                        </>
+                      )}
+                      <button
+                        onClick={() => handleDownload(url)}
+                        className="p-2 rounded-lg bg-black/60 backdrop-blur-sm text-white/80 hover:text-skinny-yellow hover:bg-black/80 transition-colors"
+                        title="Download"
+                      >
+                        <Download size={12} />
+                      </button>
+                      <a
+                        href={url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="p-2 rounded-lg bg-black/60 backdrop-blur-sm text-white/80 hover:text-skinny-yellow hover:bg-black/80 transition-colors"
+                        title="Open in new tab"
+                      >
+                        <ExternalLink size={12} />
+                      </a>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+            {/* Shared actions for all images */}
+            <div className="flex items-center gap-2">
+              <span className="px-2 py-1 rounded-full bg-black/60 backdrop-blur-sm text-white/80 text-[10px] font-medium">
+                {model}
+              </span>
+              <span className="px-2 py-1 rounded-full bg-skinny-yellow/20 text-skinny-yellow text-[10px] font-medium">
+                {allOutputUrls.length} images
+              </span>
+              <button
+                onClick={handleSaveToLibrary}
+                disabled={isAlreadySaved || isSaved}
+                className={cn(
+                  "flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-medium transition-colors",
+                  isAlreadySaved || isSaved
+                    ? "bg-skinny-yellow/20 text-skinny-yellow"
+                    : "bg-white/[0.05] text-white/60 hover:text-skinny-yellow hover:bg-white/[0.1]"
+                )}
+              >
+                <Bookmark size={10} fill={isAlreadySaved || isSaved ? "currentColor" : "none"} />
+                {isAlreadySaved || isSaved ? "Saved" : "Save All"}
+              </button>
+            </div>
           </div>
-          {/* Action buttons - visible on hover */}
-          <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-            <button
-              onClick={handleSaveToLibrary}
-              disabled={isAlreadySaved || isSaved}
-              className={cn(
-                "p-2 rounded-lg bg-black/60 backdrop-blur-sm transition-colors",
-                isAlreadySaved || isSaved
-                  ? "text-skinny-yellow"
-                  : "text-white/80 hover:text-skinny-yellow hover:bg-black/80"
+        ) : (
+          // Single image display (original layout)
+          <div className="relative group rounded-xl overflow-hidden border border-white/[0.1] hover:border-skinny-yellow/30 transition-colors">
+            {isVideoUrl(effectiveResult.imageUrl) ? (
+              <video
+                src={effectiveResult.imageUrl}
+                className="w-full max-w-md h-auto"
+                controls
+                autoPlay
+                loop
+                muted
+                playsInline
+              />
+            ) : (
+              <SmartImage
+                src={effectiveResult.imageUrl}
+                alt={effectiveResult.prompt}
+                className="w-full max-w-md h-auto"
+              />
+            )}
+            {/* Model badge + Video indicator */}
+            <div className="absolute top-2 left-2 flex items-center gap-1">
+              <span className="px-2 py-1 rounded-full bg-black/60 backdrop-blur-sm text-white/80 text-[10px] font-medium">
+                {model}
+              </span>
+              {isVideoUrl(effectiveResult.imageUrl) && (
+                <span className="flex items-center gap-1 px-2 py-1 rounded-full bg-purple-500/60 backdrop-blur-sm text-white text-[10px] font-medium">
+                  <Video size={10} />
+                  Video
+                </span>
               )}
-              title={isAlreadySaved || isSaved ? "Saved to Library" : "Save to Library"}
-            >
-              <Bookmark size={14} fill={isAlreadySaved || isSaved ? "currentColor" : "none"} />
-            </button>
-            <button
-              onClick={handleDownload}
-              disabled={isDownloading}
-              className="p-2 rounded-lg bg-black/60 backdrop-blur-sm text-white/80 hover:text-skinny-yellow hover:bg-black/80 transition-colors disabled:opacity-50"
-              title="Download image"
-            >
-              {isDownloading ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-            </button>
-            <a
-              href={result.imageUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="p-2 rounded-lg bg-black/60 backdrop-blur-sm text-white/80 hover:text-skinny-yellow hover:bg-black/80 transition-colors"
-              title="Open in new tab"
-            >
-              <ExternalLink size={14} />
-            </a>
+            </div>
+            {/* Action buttons - visible on hover */}
+            <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              {/* Reference & Edit buttons - only for images, not videos */}
+              {!isVideoUrl(effectiveResult.imageUrl) && (
+                <>
+                  <button
+                    onClick={() => {
+                      window.dispatchEvent(new CustomEvent('chat-add-attachment', {
+                        detail: { url: effectiveResult.imageUrl, purpose: 'reference', name: `Reference from ${model}` }
+                      }))
+                    }}
+                    className="p-2 rounded-lg bg-black/60 backdrop-blur-sm text-white/80 hover:text-skinny-yellow hover:bg-black/80 transition-colors"
+                    title="Use as reference in chat"
+                  >
+                    <MessageSquarePlus size={14} />
+                  </button>
+                  <button
+                    onClick={() => {
+                      window.dispatchEvent(new CustomEvent('chat-add-attachment', {
+                        detail: { url: effectiveResult.imageUrl, purpose: 'edit_target', name: `Edit ${model} output` }
+                      }))
+                    }}
+                    className="p-2 rounded-lg bg-black/60 backdrop-blur-sm text-white/80 hover:text-skinny-yellow hover:bg-black/80 transition-colors"
+                    title="Edit this image"
+                  >
+                    <Pencil size={14} />
+                  </button>
+                </>
+              )}
+              <button
+                onClick={handleSaveToLibrary}
+                disabled={isAlreadySaved || isSaved}
+                className={cn(
+                  "p-2 rounded-lg bg-black/60 backdrop-blur-sm transition-colors",
+                  isAlreadySaved || isSaved
+                    ? "text-skinny-yellow"
+                    : "text-white/80 hover:text-skinny-yellow hover:bg-black/80"
+                )}
+                title={isAlreadySaved || isSaved ? "Saved to Library" : "Save to Library"}
+              >
+                <Bookmark size={14} fill={isAlreadySaved || isSaved ? "currentColor" : "none"} />
+              </button>
+              <button
+                onClick={() => handleDownload()}
+                disabled={isDownloading}
+                className="p-2 rounded-lg bg-black/60 backdrop-blur-sm text-white/80 hover:text-skinny-yellow hover:bg-black/80 transition-colors disabled:opacity-50"
+                title={isVideoUrl(effectiveResult.imageUrl) ? "Download video" : "Download image"}
+              >
+                {isDownloading ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+              </button>
+              <a
+                href={effectiveResult.imageUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="p-2 rounded-lg bg-black/60 backdrop-blur-sm text-white/80 hover:text-skinny-yellow hover:bg-black/80 transition-colors"
+                title="Open in new tab"
+              >
+                <ExternalLink size={14} />
+              </a>
+            </div>
           </div>
-        </div>
-        <p className="mt-2 text-xs text-white/30 italic">"{result.prompt}"</p>
+        )}
+        <p className="mt-2 text-xs text-white/30 italic">"{effectiveResult.prompt}"</p>
       </div>
     )
   }
@@ -333,10 +700,24 @@ function AttachmentPreviews({ attachments }: { attachments: ChatAttachment[] }) 
   )
 }
 
-export const ChatMessage = memo(function ChatMessage({ message }: ChatMessageProps) {
+export const ChatMessage = memo(function ChatMessage({ message, onQuickGenerate, onEditPrompt, showQuickActions }: ChatMessageProps) {
   const [copied, setCopied] = useState(false)
   const isUser = message.role === 'user'
   const isAssistant = message.role === 'assistant'
+
+  // Detect if this is a confirmation/cost estimate message
+  // Look for patterns like "Estimated cost:" or "Ready to create" or cost estimates
+  const isConfirmationMessage = useMemo(() => {
+    if (!isAssistant || !message.content || message.generation || message.isStreaming) return false
+    const content = message.content.toLowerCase()
+    // Check for cost estimate patterns
+    return (
+      content.includes('estimated cost') ||
+      content.includes('ready to create') ||
+      content.includes('ready to generate') ||
+      (content.includes('$0.') && (content.includes('does this') || content.includes('look good') || content.includes('shall i')))
+    )
+  }, [isAssistant, message.content, message.generation, message.isStreaming])
 
   // Get skills for highlighting
   const { state: skillsState } = useSkills()
@@ -368,8 +749,14 @@ export const ChatMessage = memo(function ChatMessage({ message }: ChatMessagePro
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 10 }}
+      initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
+      transition={{
+        type: "spring",
+        stiffness: 400,
+        damping: 30,
+        mass: 0.8
+      }}
       className={cn(
         "flex gap-3 px-4 py-4",
         isUser ? "flex-row-reverse" : ""
@@ -477,6 +864,30 @@ export const ChatMessage = memo(function ChatMessage({ message }: ChatMessagePro
             </button>
           )}
         </div>
+
+        {/* Quick Action Buttons for confirmation messages */}
+        {isConfirmationMessage && showQuickActions && (
+          <motion.div
+            initial={{ opacity: 0, y: 5 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="flex items-center gap-2 mt-2"
+          >
+            <button
+              onClick={onQuickGenerate}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-skinny-yellow text-black rounded-lg font-bold text-xs hover:bg-skinny-yellow/90 active:scale-95 transition-all shadow-lg shadow-skinny-yellow/20"
+            >
+              <Play size={14} className="fill-current" />
+              Generate
+            </button>
+            <button
+              onClick={onEditPrompt}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 text-zinc-300 rounded-lg font-medium text-xs hover:bg-zinc-700 hover:text-white active:scale-95 transition-all border border-zinc-700"
+            >
+              <Pencil size={12} />
+              Edit
+            </button>
+          </motion.div>
+        )}
 
         {/* Timestamp */}
         <span className={cn(

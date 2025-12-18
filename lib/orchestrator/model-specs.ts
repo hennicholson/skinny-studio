@@ -29,7 +29,14 @@ export interface ModelSpec {
     controlNet?: boolean
     inpainting?: boolean
     outpainting?: boolean
+    // Image input capabilities - tells AI which models accept reference images
+    supportsReferenceImages?: boolean  // Can use reference images (ingredients/style guides)
+    supportsStartingFrame?: boolean    // Can use starting frame for video/I2V
+    supportsLastFrame?: boolean        // Can use end frame for video interpolation
   }
+  // The actual parameter name used by Replicate API for reference images
+  imageInputParam?: string  // e.g., 'image_input', 'input_images', 'reference_images'
+  maxReferenceImages?: number  // Maximum number of reference images supported
   params: {
     required: ParamSpec[]
     optional: ParamSpec[]
@@ -49,7 +56,10 @@ export const MODEL_SPECS: ModelSpec[] = [
     capabilities: {
       textRendering: true,
       multipleReferences: true,
+      supportsReferenceImages: true,
     },
+    imageInputParam: 'image_input',
+    maxReferenceImages: 14,
     params: {
       required: [
         {
@@ -98,7 +108,10 @@ export const MODEL_SPECS: ModelSpec[] = [
     capabilities: {
       textRendering: true,
       multipleReferences: true,
+      supportsReferenceImages: true,
     },
+    imageInputParam: 'input_images',
+    maxReferenceImages: 8,
     params: {
       required: [
         {
@@ -167,7 +180,9 @@ export const MODEL_SPECS: ModelSpec[] = [
     capabilities: {
       textRendering: true,
       multipleReferences: true,
+      supportsReferenceImages: true,
     },
+    imageInputParam: 'image_input',
     params: {
       required: [
         {
@@ -579,7 +594,10 @@ export const MODEL_SPECS: ModelSpec[] = [
     capabilities: {
       textRendering: true,
       multipleReferences: true,
+      supportsReferenceImages: true,
     },
+    imageInputParam: 'image_input',
+    maxReferenceImages: 14,
     params: {
       required: [
         {
@@ -634,7 +652,10 @@ export const MODEL_SPECS: ModelSpec[] = [
     capabilities: {
       textRendering: true,
       multipleReferences: true,
+      supportsReferenceImages: true,
     },
+    imageInputParam: 'input_images',
+    maxReferenceImages: 10,
     params: {
       required: [
         {
@@ -710,7 +731,12 @@ export const MODEL_SPECS: ModelSpec[] = [
     capabilities: {
       multipleReferences: true,
       lastFrame: true,
+      supportsReferenceImages: true,
+      supportsStartingFrame: true,
+      supportsLastFrame: true,
     },
+    imageInputParam: 'reference_images',
+    maxReferenceImages: 3,
     params: {
       required: [
         {
@@ -837,7 +863,10 @@ export const MODEL_SPECS: ModelSpec[] = [
     name: 'Wan 2.5 I2V',
     replicateId: 'wan-video/wan-2.5-i2v',
     type: 'video',
-    capabilities: {},
+    capabilities: {
+      supportsStartingFrame: true,
+    },
+    imageInputParam: 'image',
     params: {
       required: [
         {
@@ -900,7 +929,10 @@ export const MODEL_SPECS: ModelSpec[] = [
     name: 'Kling V2.5 Turbo Pro',
     replicateId: 'kwaivgi/kling-v2.5-turbo-pro',
     type: 'video',
-    capabilities: {},
+    capabilities: {
+      supportsStartingFrame: true,
+    },
+    imageInputParam: 'start_image',
     params: {
       required: [
         {
@@ -950,7 +982,10 @@ export const MODEL_SPECS: ModelSpec[] = [
     name: 'Hailuo 2.3',
     replicateId: 'minimax/hailuo-2.3',
     type: 'video',
-    capabilities: {},
+    capabilities: {
+      supportsStartingFrame: true,
+    },
+    imageInputParam: 'first_frame_image',
     params: {
       required: [
         {

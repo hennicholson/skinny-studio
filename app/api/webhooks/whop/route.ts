@@ -38,8 +38,12 @@ export async function POST(request: Request) {
     const signature = request.headers.get("x-whop-signature") || ""
     const webhookSecret = process.env.WHOP_WEBHOOK_SECRET || ""
 
-    // Verify signature if secret is configured
-    if (webhookSecret && signature) {
+    // Verify signature if secret is configured (FAIL CLOSED)
+    if (webhookSecret) {
+      if (!signature) {
+        console.error("Webhook secret configured but no signature provided")
+        return NextResponse.json({ error: "Missing signature" }, { status: 401 })
+      }
       const isValid = verifyWebhookSignature(body, signature, webhookSecret)
       if (!isValid) {
         console.error("Invalid webhook signature")
@@ -51,6 +55,21 @@ export async function POST(request: Request) {
     const eventType = event.action || event.event || "unknown"
 
     console.log("Whop webhook received:", eventType)
+
+    // IDEMPOTENCY CHECK: Skip if already processed
+    if (event.id) {
+      const { data: existing } = await sbAdmin
+        .from("webhook_events")
+        .select("processed")
+        .eq("event_id", event.id)
+        .eq("processed", true)
+        .maybeSingle()
+
+      if (existing) {
+        console.log("Webhook already processed, skipping:", event.id)
+        return NextResponse.json({ received: true, duplicate: true })
+      }
+    }
 
     // Log webhook event
     await sbAdmin.from("webhook_events").insert({

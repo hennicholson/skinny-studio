@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { cn } from '@/lib/utils'
-import { Upload, ImageIcon, Loader2, X, ChevronLeft, Search } from 'lucide-react'
+import { Upload, ImageIcon, Loader2, X, ChevronLeft, Search, Folder, Monitor } from 'lucide-react'
 import { ChatAttachment } from '@/lib/context/chat-context'
 
 interface Generation {
@@ -12,9 +12,16 @@ interface Generation {
   output_urls: string[]
   created_at: string
   model_slug: string
+  folder_id?: string | null
   studio_models?: {
     name: string
   }
+}
+
+interface HubFolder {
+  id: string
+  name: string
+  generation_count: number
 }
 
 interface ImageSourcePickerProps {
@@ -34,14 +41,17 @@ export function ImageSourcePicker({
 }: ImageSourcePickerProps) {
   const [view, setView] = useState<'menu' | 'hub'>('menu')
   const [generations, setGenerations] = useState<Generation[]>([])
+  const [folders, setFolders] = useState<HubFolder[]>([])
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null) // null = all, 'unfiled' = desktop
   const [isLoading, setIsLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
 
-  // Fetch user's generations when hub view is opened
+  // Fetch user's generations and folders when hub view is opened
   useEffect(() => {
     if (view === 'hub' && generations.length === 0) {
       fetchGenerations()
+      fetchFolders()
     }
   }, [view])
 
@@ -50,6 +60,7 @@ export function ImageSourcePicker({
     if (!isOpen) {
       setView('menu')
       setSearchQuery('')
+      setSelectedFolderId(null)
     }
   }, [isOpen])
 
@@ -84,6 +95,29 @@ export function ImageSourcePicker({
     }
   }
 
+  const fetchFolders = async () => {
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      }
+      if (typeof window !== 'undefined') {
+        const devToken = localStorage.getItem('whop-dev-token')
+        const devUserId = localStorage.getItem('whop-dev-user-id')
+        if (devToken) headers['x-whop-user-token'] = devToken
+        if (devUserId) headers['x-whop-user-id'] = devUserId
+      }
+
+      const res = await fetch('/api/folders', { headers })
+      if (res.ok) {
+        const data = await res.json()
+        setFolders(data.folders || [])
+      }
+    } catch (err) {
+      // Silently fail - folders are optional enhancement
+      console.error('Failed to fetch folders:', err)
+    }
+  }
+
   const handleSelectFromHub = (generation: Generation, imageUrl: string) => {
     const attachment: ChatAttachment = {
       id: `hub_${generation.id}_${Date.now()}`,
@@ -95,12 +129,30 @@ export function ImageSourcePicker({
     onClose()
   }
 
-  const filteredGenerations = searchQuery
-    ? generations.filter(g =>
+  // Filter generations by folder and search
+  const filteredGenerations = (() => {
+    let result = generations
+
+    // Filter by folder
+    if (selectedFolderId === 'unfiled') {
+      result = result.filter(g => !g.folder_id)
+    } else if (selectedFolderId) {
+      result = result.filter(g => g.folder_id === selectedFolderId)
+    }
+
+    // Filter by search
+    if (searchQuery) {
+      result = result.filter(g =>
         g.prompt?.toLowerCase().includes(searchQuery.toLowerCase()) ||
         g.model_slug?.toLowerCase().includes(searchQuery.toLowerCase())
       )
-    : generations
+    }
+
+    return result
+  })()
+
+  // Count unfiled (desktop) images
+  const unfiledCount = generations.filter(g => !g.folder_id).length
 
   if (!isOpen) return null
 
@@ -211,6 +263,53 @@ export function ImageSourcePicker({
           {/* Hub View */}
           {view === 'hub' && (
             <div className="flex flex-col max-h-[70vh]">
+              {/* Folder Tabs */}
+              {(folders.length > 0 || unfiledCount > 0) && (
+                <div className="flex items-center gap-1 px-3 pt-3 pb-2 overflow-x-auto no-scrollbar">
+                  {/* All */}
+                  <button
+                    onClick={() => setSelectedFolderId(null)}
+                    className={cn(
+                      "flex-shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium transition-all",
+                      selectedFolderId === null
+                        ? "bg-skinny-yellow text-black"
+                        : "bg-white/[0.05] text-white/60 hover:text-white hover:bg-white/[0.08]"
+                    )}
+                  >
+                    All ({generations.length})
+                  </button>
+                  {/* Desktop (unfiled) */}
+                  <button
+                    onClick={() => setSelectedFolderId('unfiled')}
+                    className={cn(
+                      "flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all",
+                      selectedFolderId === 'unfiled'
+                        ? "bg-skinny-yellow text-black"
+                        : "bg-white/[0.05] text-white/60 hover:text-white hover:bg-white/[0.08]"
+                    )}
+                  >
+                    <Monitor size={12} />
+                    Desktop ({unfiledCount})
+                  </button>
+                  {/* User folders */}
+                  {folders.map(folder => (
+                    <button
+                      key={folder.id}
+                      onClick={() => setSelectedFolderId(folder.id)}
+                      className={cn(
+                        "flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all",
+                        selectedFolderId === folder.id
+                          ? "bg-skinny-yellow text-black"
+                          : "bg-white/[0.05] text-white/60 hover:text-white hover:bg-white/[0.08]"
+                      )}
+                    >
+                      <Folder size={12} />
+                      {folder.name} ({folder.generation_count})
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {/* Search */}
               <div className="p-3 border-b border-white/[0.05]">
                 <div className="relative">
@@ -245,10 +344,20 @@ export function ImageSourcePicker({
                   <div className="text-center py-12">
                     <ImageIcon size={32} className="mx-auto text-white/20 mb-3" />
                     <p className="text-white/40 text-sm">
-                      {searchQuery ? 'No matching images' : 'No generations yet'}
+                      {searchQuery
+                        ? 'No matching images'
+                        : selectedFolderId === 'unfiled'
+                        ? 'No unfiled images'
+                        : selectedFolderId
+                        ? 'Folder is empty'
+                        : 'No generations yet'}
                     </p>
                     <p className="text-white/30 text-xs mt-1">
-                      Create some images to see them here
+                      {searchQuery
+                        ? 'Try a different search'
+                        : selectedFolderId
+                        ? 'Add images to this folder in your library'
+                        : 'Create some images to see them here'}
                     </p>
                   </div>
                 ) : (

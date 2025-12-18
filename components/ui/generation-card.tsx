@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion, AnimatePresence, PanInfo } from 'framer-motion'
 import { cn } from '@/lib/utils'
 import { Download, Share2, Bookmark, Heart, Copy, Check, X, ExternalLink } from 'lucide-react'
 import { Generation } from '@/lib/mock-data'
@@ -87,7 +87,7 @@ export function GenerationCard({ generation, onSaveToWorkflow, onShare }: Genera
 
           {/* Model Badge */}
           <div className="absolute top-3 left-3">
-            <span className="px-2.5 py-1 rounded-full bg-skinny-yellow text-black text-[10px] font-bold uppercase tracking-wide">
+            <span className="px-2.5 py-1 rounded-full bg-skinny-yellow text-black text-[11px] sm:text-[10px] font-bold uppercase tracking-wide">
               {generation.modelName || generation.model?.name}
             </span>
           </div>
@@ -100,47 +100,47 @@ export function GenerationCard({ generation, onSaveToWorkflow, onShare }: Genera
             </div>
           )}
 
-          {/* Hover Overlay */}
+          {/* Hover Overlay - always visible on mobile, hover on desktop */}
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: isHovered ? 1 : 0 }}
-            className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent"
+            className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
           >
-            <div className="absolute bottom-0 left-0 right-0 p-4">
+            <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4">
               {/* Prompt Preview */}
               <p className="text-sm text-white line-clamp-2 mb-3">
                 {generation.prompt}
               </p>
 
-              {/* Actions */}
-              <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
+              {/* Actions - 44px minimum touch targets */}
+              <div className="flex gap-1 sm:gap-2" onClick={(e) => e.stopPropagation()}>
                 <button
                   onClick={() => window.open(generation.imageUrl, '_blank')}
-                  className="p-2 rounded-lg bg-zinc-800/80 hover:bg-skinny-yellow hover:text-black text-white transition-all"
+                  className="p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg bg-zinc-800/80 hover:bg-skinny-yellow hover:text-black text-white transition-all"
                   title="Download"
                 >
-                  <Download size={16} />
+                  <Download size={18} />
                 </button>
                 <button
                   onClick={() => onShare?.(generation.id)}
-                  className="p-2 rounded-lg bg-zinc-800/80 hover:bg-skinny-yellow hover:text-black text-white transition-all"
+                  className="p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg bg-zinc-800/80 hover:bg-skinny-yellow hover:text-black text-white transition-all"
                   title="Share"
                 >
-                  <Share2 size={16} />
+                  <Share2 size={18} />
                 </button>
                 <button
                   onClick={() => onSaveToWorkflow?.(generation.id)}
-                  className="p-2 rounded-lg bg-zinc-800/80 hover:bg-skinny-yellow hover:text-black text-white transition-all"
+                  className="p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg bg-zinc-800/80 hover:bg-skinny-yellow hover:text-black text-white transition-all"
                   title="Save to Workflow"
                 >
-                  <Bookmark size={16} />
+                  <Bookmark size={18} />
                 </button>
                 <button
                   onClick={copyPrompt}
-                  className="p-2 rounded-lg bg-zinc-800/80 hover:bg-skinny-yellow hover:text-black text-white transition-all ml-auto"
+                  className="p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg bg-zinc-800/80 hover:bg-skinny-yellow hover:text-black text-white transition-all ml-auto"
                   title="Copy Prompt"
                 >
-                  {copied ? <Check size={16} /> : <Copy size={16} />}
+                  {copied ? <Check size={18} /> : <Copy size={18} />}
                 </button>
               </div>
             </div>
@@ -163,17 +163,29 @@ export function GenerationCard({ generation, onSaveToWorkflow, onShare }: Genera
           >
             <motion.div
               ref={modalRef}
-              initial={{ scale: 0.95, opacity: 0 }}
+              initial={{ scale: 0.96, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
+              exit={{ scale: 0.96, opacity: 0 }}
+              transition={{ type: "spring", stiffness: 400, damping: 30 }}
+              drag="y"
+              dragConstraints={{ top: 0, bottom: 0 }}
+              dragElastic={0.3}
+              onDragEnd={(event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo) => {
+                // Swipe down to dismiss
+                if (info.offset.y > 100 || info.velocity.y > 500) {
+                  setShowDetails(false)
+                }
+              }}
               onClick={(e) => e.stopPropagation()}
-              className="relative bg-zinc-900 border-2 border-zinc-800 rounded-2xl overflow-hidden max-w-4xl w-full max-h-[90vh] flex flex-col md:flex-row"
+              className="relative bg-zinc-900 border-2 border-zinc-800 rounded-2xl overflow-hidden max-w-4xl w-full max-h-[90vh] flex flex-col md:flex-row touch-pan-x"
             >
+              {/* Drag handle indicator - mobile only */}
+              <div className="md:hidden absolute top-2 left-1/2 -translate-x-1/2 w-10 h-1 bg-zinc-600 rounded-full z-20" />
               {/* Close Button */}
               <button
                 ref={closeButtonRef}
                 onClick={() => setShowDetails(false)}
-                className="absolute top-4 right-4 z-10 p-2 rounded-lg bg-black/50 hover:bg-zinc-800 transition-colors focus:outline-none focus:ring-2 focus:ring-skinny-yellow"
+                className="absolute top-3 right-3 sm:top-4 sm:right-4 z-10 p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg bg-black/50 hover:bg-zinc-800 transition-colors focus:outline-none focus:ring-2 focus:ring-skinny-yellow"
                 aria-label="Close modal"
               >
                 <X size={20} />
@@ -189,7 +201,7 @@ export function GenerationCard({ generation, onSaveToWorkflow, onShare }: Genera
               </div>
 
               {/* Details */}
-              <div className="md:w-1/3 p-6 overflow-y-auto">
+              <div className="md:w-1/3 p-4 sm:p-6 overflow-y-auto">
                 <h2 id="generation-modal-title" className="sr-only">Generation Details</h2>
 
                 {/* Model */}

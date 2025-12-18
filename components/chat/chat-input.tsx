@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { cn } from '@/lib/utils'
-import { Loader2, Image as ImageIcon, X, ImageOff, Wand2, ChevronDown, SendIcon, Paperclip, Zap } from 'lucide-react'
+import { Loader2, Image as ImageIcon, X, ImageOff, Wand2, ChevronDown, SendIcon, Paperclip, Zap, MessageSquare } from 'lucide-react'
 import { ChatAttachment, ImagePurpose, IMAGE_PURPOSE_LABELS } from '@/lib/context/chat-context'
 import { validateImage, createThumbnailUrl, revokeThumbnailUrl } from '@/lib/image-utils'
 import { selectedModelSupportsVision, getSelectedModel } from '@/lib/api-settings'
@@ -77,6 +77,74 @@ export function ChatInput({
       attachments.forEach(a => revokeThumbnailUrl(a.url))
     }
   }, [])
+
+  // Handle clipboard paste for images
+  const handlePaste = useCallback((e: ClipboardEvent) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+
+    for (const item of Array.from(items)) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault()
+
+        const file = item.getAsFile()
+        if (!file) continue
+
+        if (attachments.length >= MAX_IMAGES) {
+          // Max images reached, ignore paste
+          return
+        }
+
+        const validation = validateImage(file)
+        if (!validation.valid) {
+          // Invalid image, ignore
+          return
+        }
+
+        const url = createThumbnailUrl(file)
+        const newAttachment: ChatAttachment = {
+          id: `paste_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          type: 'image',
+          url,
+          name: `Pasted Image ${attachments.length + 1}`,
+          file,
+        }
+
+        setPendingAttachment(newAttachment)
+        setShowPurposeModal(true)
+        return // Only handle first image
+      }
+    }
+  }, [attachments.length])
+
+  // Register paste event listener
+  useEffect(() => {
+    document.addEventListener('paste', handlePaste)
+    return () => document.removeEventListener('paste', handlePaste)
+  }, [handlePaste])
+
+  // Listen for external add-attachment events (from generation cards)
+  useEffect(() => {
+    const handleAddAttachment = (e: CustomEvent<{ url: string; purpose: ImagePurpose; name?: string }>) => {
+      if (attachments.length >= MAX_IMAGES) return
+
+      const { url, purpose, name } = e.detail
+      const newAttachment: ChatAttachment = {
+        id: `ref_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        type: 'image',
+        url,
+        name: name || 'Referenced Image',
+        purpose,
+      }
+      setAttachments(prev => [...prev, newAttachment])
+
+      // Focus the textarea so user can type their prompt
+      setTimeout(() => textareaRef.current?.focus(), 100)
+    }
+
+    window.addEventListener('chat-add-attachment', handleAddAttachment as EventListener)
+    return () => window.removeEventListener('chat-add-attachment', handleAddAttachment as EventListener)
+  }, [attachments.length])
 
   // Detect @ for skill suggestions - show all skills, not just active ones
   const filteredSkills = useCallback(() => {
@@ -248,7 +316,7 @@ export function ChatInput({
   const canSend = (value.trim() || attachments.length > 0) && !isLoading && value.length <= MAX_CHARS
 
   return (
-    <div className="p-4">
+    <div className="p-4 pb-safe">
       <div className="max-w-2xl mx-auto">
         {/* Glassmorphism Container - NOTE: overflow-visible needed for skill dropdown to appear above */}
         <motion.div
@@ -310,7 +378,16 @@ export function ChatInput({
               value={value}
               onChange={handleInputChange}
               onKeyDown={handleKeyDown}
-              onFocus={() => setIsFocused(true)}
+              onFocus={() => {
+                setIsFocused(true)
+                // Scroll into view when keyboard appears (mobile)
+                setTimeout(() => {
+                  textareaRef.current?.scrollIntoView({
+                    behavior: 'smooth',
+                    block: 'center'
+                  })
+                }, 100)
+              }}
               onBlur={(e) => {
                 setIsFocused(false)
                 // Delay hiding suggestions to allow click
@@ -319,6 +396,9 @@ export function ChatInput({
               placeholder={placeholder}
               rows={1}
               aria-label="Chat message"
+              enterKeyHint="send"
+              autoCapitalize="sentences"
+              autoCorrect="on"
               className={cn(
                 "w-full bg-transparent resize-none focus:outline-none text-sm overflow-y-auto",
                 "placeholder:text-white/20 text-white/90"
@@ -439,7 +519,11 @@ export function ChatInput({
                 )}
                 title="Select generation model"
               >
-                <Wand2 size={14} className="text-skinny-yellow" />
+                {selectedModel.category === 'chat' ? (
+                  <MessageSquare size={14} className="text-skinny-green" />
+                ) : (
+                  <Wand2 size={14} className="text-skinny-yellow" />
+                )}
                 <span className="text-xs font-medium max-w-[100px] truncate hidden sm:inline">{selectedModel.name}</span>
                 <ChevronDown size={12} className="text-white/40" />
               </motion.button>
@@ -497,8 +581,8 @@ export function ChatInput({
         </motion.div>
 
         {/* Footer hints */}
-        <div className="flex items-center justify-between mt-3 px-1 text-[10px] text-white/30">
-          <span>
+        <div className="flex items-center justify-between mt-3 px-1 text-[11px] sm:text-[10px] text-white/30">
+          <span className="hidden sm:inline">
             <kbd className="text-white/40">Enter</kbd> to send • <kbd className="text-white/40">Shift+Enter</kbd> new line • <kbd className="text-skinny-yellow/60">@</kbd> for skills
           </span>
           <span className={cn(

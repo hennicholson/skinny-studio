@@ -104,7 +104,7 @@ export default async (req: Request) => {
     // These are generations where the function timed out
     const { data: pendingGenerations, error: fetchError } = await sbAdmin
       .from('generations')
-      .select('id, replicate_prediction_id, whop_user_id, cost_cents')
+      .select('id, replicate_prediction_id, whop_user_id, user_id, cost_cents, model_slug, model_category, prompt')
       .eq('replicate_status', 'starting')
       .not('replicate_prediction_id', 'is', null)
       .order('created_at', { ascending: false })
@@ -169,6 +169,75 @@ export default async (req: Request) => {
             .eq('id', generation.id)
 
           console.log(`[Poll Pending] Updated generation ${generation.id} with ${permanentUrls.length} images`)
+
+          // === BILLING: Deduct balance and log transaction ===
+          if (generation.user_id && generation.cost_cents > 0) {
+            // Check for lifetime access
+            const { data: userProfile } = await sbAdmin
+              .from('user_profiles')
+              .select('id, lifetime_access')
+              .eq('id', generation.user_id)
+              .single()
+
+            const hasLifetimeAccess = userProfile?.lifetime_access || false
+
+            // Deduct balance if not lifetime user
+            if (!hasLifetimeAccess) {
+              const { data: deductResult, error: deductError } = await sbAdmin.rpc(
+                'deduct_balance_safely',
+                { p_user_id: generation.user_id, p_amount: generation.cost_cents }
+              )
+              if (deductError) {
+                console.error('[Poll Pending] Failed to deduct balance:', deductError)
+              } else if (!deductResult?.success) {
+                console.error('[Poll Pending] Balance deduction failed:', deductResult?.error)
+              } else {
+                console.log(`[Poll Pending] Deducted ${generation.cost_cents} cents. New balance: ${deductResult.new_balance}`)
+              }
+            }
+
+            // Log transaction
+            const effectiveCost = hasLifetimeAccess ? 0 : generation.cost_cents
+            const { error: txError } = await sbAdmin.from('credit_transactions').insert({
+              user_id: generation.whop_user_id,
+              type: 'PersonaForge',
+              amount: -effectiveCost / 100,
+              amount_charged: effectiveCost / 100,
+              app_name: 'Skinny Studio',
+              task: generation.model_category === 'video' ? 'Video Generation' : 'Image Generation',
+              status: 'completed',
+              preview: permanentUrls[0],
+              metadata: {
+                model: generation.model_slug,
+                prompt: generation.prompt,
+                completed_via_poll: true,
+                is_lifetime_user: hasLifetimeAccess,
+              },
+            })
+
+            if (txError) {
+              console.error('[Poll Pending] Failed to log transaction:', txError)
+            } else {
+              console.log('[Poll Pending] Transaction logged successfully')
+            }
+
+            // Update generation with billing_complete flag
+            await sbAdmin
+              .from('generations')
+              .update({
+                output_metadata: {
+                  images_generated: permanentUrls.length,
+                  billing_complete: true,
+                  billed_at: new Date().toISOString(),
+                  billed_via: 'poll_function',
+                  billed_amount_cents: effectiveCost,
+                },
+              })
+              .eq('id', generation.id)
+
+            console.log(`[Poll Pending] Billing complete for generation ${generation.id}`)
+          }
+
           completedCount++
 
         } else if (prediction.status === 'failed' || prediction.status === 'canceled') {

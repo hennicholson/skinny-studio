@@ -130,7 +130,7 @@ export function ImageUpload({
                 </div>
                 <button
                   onClick={() => removeImage(index)}
-                  className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                  className="absolute -top-2 -right-2 w-6 h-6 min-w-[44px] min-h-[44px] -m-[9px] rounded-full bg-red-500 text-white flex items-center justify-center opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
                 >
                   <X size={12} />
                 </button>
@@ -180,7 +180,7 @@ export function ImageUpload({
               <p className="text-xs text-zinc-400">
                 {isDragging ? 'Drop images here' : 'Drop reference images or click to browse'}
               </p>
-              <p className="text-[10px] text-zinc-600 mt-1">
+              <p className="text-[11px] sm:text-[10px] text-zinc-600 mt-1">
                 {images.length}/{maxImages} images • PNG, JPG, WebP up to 10MB
               </p>
             </div>

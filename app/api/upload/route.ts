@@ -1,19 +1,54 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { hasWhopAuth, getWhopAuthFromHeaders, verifyWhopTokenAndGetProfile } from '@/lib/whop'
+import { rateLimit, getRateLimitKey, RATE_LIMITS } from '@/lib/rate-limit'
 
-export const runtime = 'edge'
+export const runtime = 'nodejs'
 
 // Max file size: 10MB
 const MAX_FILE_SIZE = 10 * 1024 * 1024
 const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
 
-// Generate a simple UUID for edge runtime (no crypto.randomUUID on all platforms)
+// Generate a simple UUID
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 15)
 }
 
 export async function POST(request: Request) {
   try {
+    // === AUTH CHECK ===
+    const isAuthenticated = await hasWhopAuth()
+    if (!isAuthenticated) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 }
+      )
+    }
+
+    let userId: string
+    try {
+      const { token, hintedId } = await getWhopAuthFromHeaders()
+      const whop = await verifyWhopTokenAndGetProfile(token, hintedId)
+      userId = whop.id
+    } catch (authError) {
+      return NextResponse.json(
+        { error: 'Invalid authentication' },
+        { status: 401 }
+      )
+    }
+
+    // === RATE LIMIT CHECK ===
+    const rateLimitKey = getRateLimitKey(request, userId, 'upload')
+    const { success: rateLimitOk } = rateLimit(rateLimitKey, RATE_LIMITS.upload.limit, RATE_LIMITS.upload.windowMs)
+
+    if (!rateLimitOk) {
+      return NextResponse.json(
+        { error: 'Too many uploads. Please try again later.' },
+        { status: 429, headers: { 'Retry-After': '60' } }
+      )
+    }
+
+    // === STORAGE CONFIG ===
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 
@@ -49,10 +84,10 @@ export async function POST(request: Request) {
       )
     }
 
-    // Generate unique filename
+    // Generate unique filename with user-scoped path
     const ext = file.name.split('.').pop() || 'jpg'
     const filename = `${generateId()}.${ext}`
-    const path = `references/${filename}`
+    const path = `references/${userId}/${filename}`  // User-scoped storage
 
     // Convert File to ArrayBuffer
     const arrayBuffer = await file.arrayBuffer()

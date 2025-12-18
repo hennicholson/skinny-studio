@@ -21,7 +21,7 @@ export const STORAGE_KEYS = {
 const isBrowser = typeof window !== 'undefined'
 
 /**
- * Save data to localStorage
+ * Save data to localStorage with quota handling
  */
 export function saveToStorage<T>(key: string, data: T): void {
   if (!isBrowser) return
@@ -30,7 +30,54 @@ export function saveToStorage<T>(key: string, data: T): void {
     const serialized = JSON.stringify(data)
     localStorage.setItem(key, serialized)
   } catch (error) {
-    console.error(`Error saving to storage (${key}):`, error)
+    // Handle quota exceeded error
+    if (error instanceof DOMException && (
+      error.name === 'QuotaExceededError' ||
+      error.code === 22 ||
+      error.code === 1014
+    )) {
+      console.warn(`Storage quota exceeded for ${key}, attempting cleanup...`)
+
+      // Try to clean up old data
+      if (key === STORAGE_KEYS.CONVERSATIONS) {
+        // For conversations, keep only the most recent 10
+        if (Array.isArray(data)) {
+          const trimmed = (data as unknown[]).slice(0, 10)
+          try {
+            localStorage.setItem(key, JSON.stringify(trimmed))
+            console.log(`Trimmed ${key} to 10 items`)
+            return
+          } catch {
+            // If still too large, keep only 5
+            try {
+              const minimal = (data as unknown[]).slice(0, 5)
+              localStorage.setItem(key, JSON.stringify(minimal))
+              console.log(`Trimmed ${key} to 5 items`)
+              return
+            } catch {
+              // Give up and clear the storage for this key
+              localStorage.removeItem(key)
+              console.warn(`Cleared ${key} due to quota limits`)
+              return
+            }
+          }
+        }
+      }
+
+      // For other keys, try clearing old data
+      try {
+        // Remove least important data first
+        localStorage.removeItem(STORAGE_KEYS.RECENT_MODELS)
+        localStorage.removeItem(STORAGE_KEYS.PLANNING_SESSIONS)
+
+        // Try again
+        localStorage.setItem(key, JSON.stringify(data))
+      } catch {
+        console.error(`Unable to save ${key} even after cleanup`)
+      }
+    } else {
+      console.error(`Error saving to storage (${key}):`, error)
+    }
   }
 }
 

@@ -24,6 +24,7 @@ export interface Generation {
   replicate_status?: string
   created_at: string
   completed_at?: string
+  folder_id?: string | null  // Library folder organization
   studio_models?: {
     id: string
     slug: string
@@ -45,6 +46,7 @@ interface GenerationContextType {
   updateGeneration: (id: string, updates: Partial<Generation>) => void
   deleteGeneration: (id: string) => void
   refreshGenerations: () => Promise<void>
+  moveGeneration: (id: string, folderId: string | null) => Promise<boolean>
 
   // Current generation state (for input UI)
   currentPrompt: string
@@ -61,6 +63,10 @@ interface GenerationContextType {
 
   // All generations (for gallery - user's generations only)
   allGenerations: Generation[]
+
+  // Folder-filtered views
+  getUnfiledGenerations: () => Generation[]
+  getGenerationsByFolder: (folderId: string) => Generation[]
 }
 
 const GenerationContext = createContext<GenerationContextType | null>(null)
@@ -153,6 +159,80 @@ export function GenerationProvider({ children }: { children: ReactNode }) {
     setGenerations(prev => prev.filter(gen => gen.id !== id))
   }, [])
 
+  // Move generation to a folder
+  const moveGeneration = useCallback(async (id: string, folderId: string | null): Promise<boolean> => {
+    // Get current folder for rollback
+    const gen = generations.find(g => g.id === id)
+    const previousFolderId = gen?.folder_id
+
+    // Optimistic update
+    setGenerations(prev => prev.map(g =>
+      g.id === id ? { ...g, folder_id: folderId } : g
+    ))
+
+    try {
+      // Build headers for Whop auth (dev mode support)
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      }
+
+      if (typeof window !== 'undefined') {
+        const devToken = localStorage.getItem('whop-dev-token')
+        const devUserId = localStorage.getItem('whop-dev-user-id')
+
+        if (devToken) {
+          headers['x-whop-user-token'] = devToken
+        }
+        if (devUserId) {
+          headers['x-whop-user-id'] = devUserId
+        }
+      }
+
+      const res = await fetch(`/api/generations/${id}/move`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ folder_id: folderId }),
+      })
+
+      if (!res.ok) {
+        // Revert on failure
+        setGenerations(prev => prev.map(g =>
+          g.id === id ? { ...g, folder_id: previousFolderId } : g
+        ))
+        return false
+      }
+
+      return true
+    } catch (error) {
+      console.error('Error moving generation:', error)
+      // Revert on failure
+      setGenerations(prev => prev.map(g =>
+        g.id === id ? { ...g, folder_id: previousFolderId } : g
+      ))
+      return false
+    }
+  }, [generations])
+
+  // Get unfiled generations (desktop)
+  const getUnfiledGenerations = useCallback(() => {
+    return generations.filter(g =>
+      !g.folder_id &&
+      g.replicate_status === 'succeeded' &&
+      g.output_urls &&
+      g.output_urls.length > 0
+    )
+  }, [generations])
+
+  // Get generations by folder
+  const getGenerationsByFolder = useCallback((folderId: string) => {
+    return generations.filter(g =>
+      g.folder_id === folderId &&
+      g.replicate_status === 'succeeded' &&
+      g.output_urls &&
+      g.output_urls.length > 0
+    )
+  }, [generations])
+
   // Add attached image
   const addAttachedImage = useCallback((image: File) => {
     setAttachedImages(prev => {
@@ -190,6 +270,7 @@ export function GenerationProvider({ children }: { children: ReactNode }) {
     updateGeneration,
     deleteGeneration,
     refreshGenerations,
+    moveGeneration,
     currentPrompt,
     setCurrentPrompt,
     attachedImages,
@@ -200,6 +281,8 @@ export function GenerationProvider({ children }: { children: ReactNode }) {
     isGenerating,
     setIsGenerating,
     allGenerations,
+    getUnfiledGenerations,
+    getGenerationsByFolder,
   }
 
   return (

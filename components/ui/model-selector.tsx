@@ -2,10 +2,11 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion, AnimatePresence, PanInfo } from 'framer-motion'
 import { cn } from '@/lib/utils'
-import { X, Search, Sparkles, Zap, Image, Video, Check, Clock, ChevronRight } from 'lucide-react'
+import { X, Search, Sparkles, Zap, Image, Video, Check, Clock, ChevronRight, MessageSquare, Film } from 'lucide-react'
 import { AIModel } from '@/lib/mock-data'
+import { hapticLight } from '@/lib/haptics'
 
 interface ModelSelectorProps {
   isOpen: boolean
@@ -27,19 +28,32 @@ export function ModelSelector({
   onModelSelected,
 }: ModelSelectorProps) {
   const [searchQuery, setSearchQuery] = useState('')
-  const [categoryFilter, setCategoryFilter] = useState<'all' | 'image' | 'video'>('all')
+  const [categoryFilter, setCategoryFilter] = useState<'all' | 'image' | 'video' | 'chat'>('all')
   const [focusedIndex, setFocusedIndex] = useState(-1)
   const [isSelecting, setIsSelecting] = useState(false)
   const [mounted, setMounted] = useState(false)
+  const [isMobile, setIsMobile] = useState(false)
 
   const drawerRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
 
-  // Only render portal on client side
+  // Only render portal on client side and detect mobile
   useEffect(() => {
     setMounted(true)
+    const checkMobile = () => setIsMobile(window.innerWidth < 768)
+    checkMobile()
+    window.addEventListener('resize', checkMobile)
+    return () => window.removeEventListener('resize', checkMobile)
   }, [])
+
+  // Handle swipe to dismiss on mobile
+  const handleDragEnd = useCallback((event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo) => {
+    // On mobile (bottom sheet), swipe down to close
+    if (isMobile && (info.offset.y > 100 || info.velocity.y > 500)) {
+      onClose()
+    }
+  }, [isMobile, onClose])
   const modelButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
 
   // Computed values - declare BEFORE useEffects that use them
@@ -58,6 +72,8 @@ export function ModelSelector({
     .slice(0, 3)
 
   const getModelIcon = (model: AIModel) => {
+    if (model.id === 'storyboard-mode') return Film
+    if (model.category === 'chat') return MessageSquare
     if (model.category === 'video') return Video
     if (model.tags.includes('fast') || model.tags.includes('fastest')) return Zap
     return Image
@@ -72,6 +88,7 @@ export function ModelSelector({
   }, [])
 
   const handleSelectModel = useCallback((model: AIModel) => {
+    hapticLight()
     setIsSelecting(true)
     onSelectModel(model.id)
     onModelSelected?.(model)
@@ -186,18 +203,35 @@ export function ModelSelector({
             aria-hidden="true"
           />
 
-          {/* Sidebar Drawer */}
+          {/* Responsive Drawer - Bottom sheet on mobile, side drawer on desktop */}
           <motion.div
             ref={drawerRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="model-selector-title"
-            initial={{ x: '100%' }}
-            animate={{ x: 0 }}
-            exit={{ x: '100%' }}
-            transition={{ type: "spring", stiffness: 400, damping: 40 }}
-            className="fixed inset-y-0 right-0 w-full sm:w-[400px] max-w-full bg-zinc-900 border-l border-zinc-800 z-[100] flex flex-col shadow-2xl"
+            initial={isMobile ? { y: '100%' } : { x: '100%' }}
+            animate={isMobile ? { y: 0 } : { x: 0 }}
+            exit={isMobile ? { y: '100%' } : { x: '100%' }}
+            transition={{ type: "spring", stiffness: 350, damping: 35, mass: 0.8 }}
+            drag={isMobile ? "y" : false}
+            dragConstraints={{ top: 0, bottom: 0 }}
+            dragElastic={0.2}
+            onDragEnd={handleDragEnd}
+            className={cn(
+              "fixed z-[100] flex flex-col shadow-2xl bg-zinc-900",
+              // Mobile: bottom sheet
+              "inset-x-0 bottom-0 max-h-[85vh] rounded-t-2xl border-t border-zinc-800",
+              // Desktop: side drawer
+              "md:inset-y-0 md:right-0 md:left-auto md:max-h-none md:w-[400px] md:rounded-none md:border-t-0 md:border-l"
+            )}
+            style={isMobile ? { paddingBottom: 'env(safe-area-inset-bottom)' } : undefined}
           >
+            {/* Drag handle - mobile only */}
+            {isMobile && (
+              <div className="flex justify-center py-2">
+                <div className="w-10 h-1 bg-zinc-600 rounded-full" />
+              </div>
+            )}
             {/* Header */}
             <div className="flex-shrink-0 flex items-center justify-between px-4 py-3 border-b border-zinc-800">
               <div className="flex items-center gap-2">
@@ -235,7 +269,7 @@ export function ModelSelector({
             {/* Category Tabs */}
             <div className="flex-shrink-0 px-4 py-2 border-b border-zinc-800">
               <div className="flex gap-1" role="tablist" aria-label="Filter by category">
-                {(['all', 'image', 'video'] as const).map((cat) => (
+                {(['all', 'chat', 'image', 'video'] as const).map((cat) => (
                   <button
                     key={cat}
                     role="tab"
@@ -245,7 +279,7 @@ export function ModelSelector({
                       setFocusedIndex(0)
                     }}
                     className={cn(
-                      "px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all",
+                      "px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wide transition-all min-h-[44px]",
                       categoryFilter === cat
                         ? "bg-skinny-yellow text-black"
                         : "bg-zinc-800/50 text-zinc-400 hover:text-white hover:bg-zinc-800"
@@ -264,7 +298,7 @@ export function ModelSelector({
                 <div className="px-4 py-3 border-b border-zinc-800/50">
                   <div className="flex items-center gap-2 mb-2">
                     <Clock size={12} className="text-zinc-500" />
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Recent</span>
+                    <span className="text-[11px] sm:text-[10px] font-bold uppercase tracking-wider text-zinc-500">Recent</span>
                   </div>
                   <div className="space-y-0.5">
                     {recentModels.map((model) => {
@@ -296,8 +330,8 @@ export function ModelSelector({
               <div className="px-4 py-3">
                 {!searchQuery && categoryFilter === 'all' && (
                   <div className="flex items-center gap-2 mb-2">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">All Models</span>
-                    <span className="text-[10px] text-zinc-600">({filteredModels.length})</span>
+                    <span className="text-[11px] sm:text-[10px] font-bold uppercase tracking-wider text-zinc-500">All Models</span>
+                    <span className="text-[11px] sm:text-[10px] text-zinc-600">({filteredModels.length})</span>
                   </div>
                 )}
 
@@ -378,8 +412,8 @@ export function ModelSelector({
             </div>
 
             {/* Footer */}
-            <div className="flex-shrink-0 px-4 py-2 border-t border-zinc-800 flex items-center justify-between text-[10px] text-zinc-500">
-              <div className="flex items-center gap-3">
+            <div className="flex-shrink-0 px-4 py-2 border-t border-zinc-800 flex items-center justify-between text-[11px] sm:text-[10px] text-zinc-500">
+              <div className="hidden sm:flex items-center gap-3">
                 <span><kbd className="px-1 py-0.5 bg-zinc-800 rounded text-zinc-400">↑↓</kbd> Navigate</span>
                 <span><kbd className="px-1 py-0.5 bg-zinc-800 rounded text-zinc-400">⏎</kbd> Select</span>
                 <span><kbd className="px-1 py-0.5 bg-zinc-800 rounded text-zinc-400">Esc</kbd> Close</span>

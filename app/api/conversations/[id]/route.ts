@@ -35,9 +35,14 @@ export async function GET(
       `)
       .eq("id", conversationId)
       .eq("whop_user_id", whopUserId)
-      .single()
+      .maybeSingle()
 
-    if (convError || !conversation) {
+    if (convError) {
+      console.error("Error fetching conversation:", convError)
+      return NextResponse.json({ error: "Server error" }, { status: 500 })
+    }
+
+    if (!conversation) {
       return NextResponse.json({ error: "Conversation not found" }, { status: 404 })
     }
 
@@ -94,12 +99,17 @@ export async function PATCH(
     const { title, isArchived, modelId, modelCategory } = body
 
     // Verify ownership
-    const { data: existing } = await sbAdmin
+    const { data: existing, error: existingError } = await sbAdmin
       .from("conversations")
       .select("id")
       .eq("id", conversationId)
       .eq("whop_user_id", whopUserId)
-      .single()
+      .maybeSingle()
+
+    if (existingError) {
+      console.error("Error checking conversation ownership:", existingError)
+      return NextResponse.json({ error: "Server error" }, { status: 500 })
+    }
 
     if (!existing) {
       return NextResponse.json({ error: "Conversation not found" }, { status: 404 })

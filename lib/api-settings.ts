@@ -22,7 +22,7 @@ export const ORCHESTRATOR_MODELS: OrchestratorModel[] = [
     name: 'Gemini 2.5 Flash',
     provider: 'google',
     description: 'Latest and most capable, best for complex creative direction',
-    limits: { rpm: 10, tpm: 250000, rpd: 500 },
+    limits: { rpm: 1000, tpm: 1000000, rpd: 10000 },
     tier: 'free',
   },
   {
@@ -30,7 +30,7 @@ export const ORCHESTRATOR_MODELS: OrchestratorModel[] = [
     name: 'Gemini 2.0 Flash',
     provider: 'google',
     description: 'Fast and capable, good balance of speed and quality',
-    limits: { rpm: 15, tpm: 1000000, rpd: 1500 },
+    limits: { rpm: 1000, tpm: 1000000, rpd: 10000 },
     tier: 'free',
   },
   {
@@ -38,7 +38,7 @@ export const ORCHESTRATOR_MODELS: OrchestratorModel[] = [
     name: 'Gemini 2.0 Flash Lite',
     provider: 'google',
     description: 'Lightweight and fast, great for quick responses',
-    limits: { rpm: 30, tpm: 1000000, rpd: 1500 },
+    limits: { rpm: 1000, tpm: 1000000, rpd: 10000 },
     tier: 'free',
   },
   {
@@ -85,7 +85,7 @@ export interface ApiSettings {
 
 const DEFAULT_SETTINGS: ApiSettings = {
   googleApiKey: '',
-  selectedModelId: 'gemma-3-12b-it',
+  selectedModelId: 'gemini-2.5-flash',
   voiceEnabled: false,
 }
 
@@ -118,7 +118,7 @@ export function saveApiSettings(settings: Partial<ApiSettings>): void {
 
 export function getSelectedModel(): OrchestratorModel {
   const settings = getApiSettings()
-  return ORCHESTRATOR_MODELS.find(m => m.id === settings.selectedModelId) || ORCHESTRATOR_MODELS.find(m => m.id === 'gemma-3-12b-it') || ORCHESTRATOR_MODELS[0]
+  return ORCHESTRATOR_MODELS.find(m => m.id === settings.selectedModelId) || ORCHESTRATOR_MODELS.find(m => m.id === 'gemini-2.5-flash') || ORCHESTRATOR_MODELS[0]
 }
 
 export function hasApiKey(): boolean {

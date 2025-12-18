@@ -2,10 +2,11 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { User, CreditCard, Zap, Palette, Bell, Shield, ChevronRight, Key, Check, Eye, EyeOff, ExternalLink, Cpu, Mic, Wallet, Plus, X, Loader2, ArrowLeft, Sparkles, Receipt } from 'lucide-react'
+import { User, CreditCard, Zap, Palette, Bell, Shield, ChevronRight, Key, Check, Eye, EyeOff, ExternalLink, Cpu, Mic, Wallet, Plus, X, Loader2, ArrowLeft, Sparkles, Receipt, Activity, Settings2, Server } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SkillsManager } from '@/components/skills/skills-manager'
 import { SpendingLog } from '@/components/settings/spending-log'
+import { GenerationsLog } from '@/components/settings/generations-log'
 import { useUser } from '@/lib/context/user-context'
 import { createSdk } from '@whop/iframe'
 import {
@@ -16,6 +17,8 @@ import {
   saveApiSettings,
   ApiSettings
 } from '@/lib/api-settings'
+import { isAdmin } from '@/lib/admin'
+import Link from 'next/link'
 
 interface TopupPlan {
   plan_id: number
@@ -107,13 +110,18 @@ interface SettingsViewProps {
 export function SettingsView({ initialPanel = 'main' }: SettingsViewProps) {
   const [settings, setSettings] = useState<ApiSettings>({
     googleApiKey: '',
-    selectedModelId: 'gemini-2.0-flash-lite',
+    selectedModelId: 'gemini-2.5-flash',
     voiceEnabled: false,
   })
   const [showApiKey, setShowApiKey] = useState(false)
   const [showModelSelector, setShowModelSelector] = useState(false)
   const [apiKeySaved, setApiKeySaved] = useState(false)
   const [showSkillsManager, setShowSkillsManager] = useState(false)
+
+  // Platform orchestration status
+  const [platformEnabled, setPlatformEnabled] = useState(false)
+  const [platformModel, setPlatformModel] = useState<string | null>(null)
+  const [platformLoading, setPlatformLoading] = useState(true)
 
   // Account views
   const [activePanel, setActivePanel] = useState<'main' | 'profile' | 'balance'>(initialPanel)
@@ -141,6 +149,25 @@ export function SettingsView({ initialPanel = 'main' }: SettingsViewProps) {
   // Load settings on mount
   useEffect(() => {
     setSettings(getApiSettings())
+  }, [])
+
+  // Check platform orchestration status
+  useEffect(() => {
+    async function checkPlatformStatus() {
+      try {
+        const res = await fetch('/api/platform-status')
+        if (res.ok) {
+          const data = await res.json()
+          setPlatformEnabled(data.platformOrchestrationEnabled)
+          setPlatformModel(data.defaultModel)
+        }
+      } catch (err) {
+        console.error('Failed to check platform status:', err)
+      } finally {
+        setPlatformLoading(false)
+      }
+    }
+    checkPlatformStatus()
   }, [])
 
   // Fetch topup plans when balance panel opens
@@ -425,7 +452,7 @@ export function SettingsView({ initialPanel = 'main' }: SettingsViewProps) {
               </div>
             )}
 
-            {/* Spending History */}
+            {/* Generation History */}
             <motion.div
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
@@ -433,10 +460,10 @@ export function SettingsView({ initialPanel = 'main' }: SettingsViewProps) {
               className="mt-8"
             >
               <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-4 flex items-center gap-2">
-                <Receipt size={14} />
-                Spending History
+                <Activity size={14} />
+                Generation History
               </h3>
-              <SpendingLog />
+              <GenerationsLog />
             </motion.div>
 
             {/* Usage Info */}
@@ -519,121 +546,161 @@ export function SettingsView({ initialPanel = 'main' }: SettingsViewProps) {
           transition={{ delay: 0.05 }}
           className="mb-8"
         >
-          <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-3">API Configuration</h3>
+          <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-3">AI Creative Director</h3>
 
-          {/* API Key Input */}
-          <div className="p-4 rounded-xl bg-zinc-900/50 border border-zinc-800 mb-3">
-            <div className="flex items-center gap-2 mb-3">
-              <Key size={16} className="text-skinny-yellow" />
-              <span className="text-sm font-medium text-white">Google AI API Key</span>
-              <a
-                href="https://aistudio.google.com/apikey"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="ml-auto flex items-center gap-1 text-xs text-skinny-yellow hover:text-skinny-green transition-colors"
-              >
-                Get free key <ExternalLink size={12} />
-              </a>
-            </div>
-
-            <div className="relative">
-              <input
-                type={showApiKey ? 'text' : 'password'}
-                value={settings.googleApiKey}
-                onChange={(e) => handleApiKeyChange(e.target.value)}
-                placeholder="AIza..."
-                className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2.5 pr-20 text-sm focus:outline-none focus:border-skinny-yellow/50 transition-colors font-mono"
-              />
-              <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
-                <button
-                  onClick={() => setShowApiKey(!showApiKey)}
-                  className="p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-zinc-700 transition-colors"
-                >
-                  {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
+          {/* Platform Mode Enabled Banner */}
+          {platformLoading ? (
+            <div className="p-4 rounded-xl bg-zinc-900/50 border border-zinc-800 mb-3">
+              <div className="flex items-center gap-3">
+                <Loader2 size={18} className="animate-spin text-zinc-500" />
+                <span className="text-sm text-zinc-500">Checking configuration...</span>
               </div>
             </div>
-
-            <div className="flex items-center justify-between mt-3">
-              <p className="text-[10px] text-zinc-600">
-                Your key is stored locally and never sent to our servers
-              </p>
-              <button
-                onClick={handleSaveApiKey}
-                disabled={!settings.googleApiKey}
-                className={cn(
-                  "px-3 py-1.5 rounded-lg text-xs font-bold uppercase transition-all",
-                  settings.googleApiKey
-                    ? apiKeySaved
-                      ? "bg-green-500/20 text-green-400"
-                      : "bg-skinny-yellow text-black hover:bg-skinny-green"
-                    : "bg-zinc-800 text-zinc-600 cursor-not-allowed"
-                )}
-              >
-                {apiKeySaved ? 'Saved!' : 'Save'}
-              </button>
-            </div>
-          </div>
-
-          {/* Model Selector */}
-          <button
-            onClick={() => setShowModelSelector(!showModelSelector)}
-            className="w-full p-4 rounded-xl bg-zinc-900/50 border border-zinc-800 hover:border-zinc-700 text-left transition-colors"
-          >
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-zinc-800 text-skinny-yellow">
-                <Cpu size={18} />
-              </div>
-              <div className="flex-1">
-                <h4 className="font-medium text-white">Orchestrator Model</h4>
-                <p className="text-xs text-zinc-500">{selectedModel.name}</p>
-              </div>
-              <ChevronRight
-                size={18}
-                className={cn(
-                  "text-zinc-600 transition-transform",
-                  showModelSelector && "rotate-90"
-                )}
-              />
-            </div>
-          </button>
-
-          <AnimatePresence>
-            {showModelSelector && (
-              <motion.div
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: 'auto', opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                className="overflow-hidden"
-              >
-                <div className="space-y-2 pt-3">
-                  <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-2">Free Tier Models</p>
-                  {ORCHESTRATOR_MODELS.map(model => (
-                    <ModelCard
-                      key={model.id}
-                      model={model}
-                      isSelected={settings.selectedModelId === model.id}
-                      onSelect={() => handleModelSelect(model.id)}
-                    />
-                  ))}
-
-                  {/* Voice models section - coming soon */}
-                  <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-2 mt-4 flex items-center gap-2">
-                    Voice Mode <span className="text-purple-400">(Coming Soon)</span>
-                  </p>
-                  {VOICE_MODELS.map(model => (
-                    <div key={model.id} className="opacity-50 cursor-not-allowed">
-                      <ModelCard
-                        model={model}
-                        isSelected={false}
-                        onSelect={() => {}}
-                      />
-                    </div>
-                  ))}
+          ) : platformEnabled ? (
+            <div className="p-4 rounded-xl bg-gradient-to-r from-skinny-green/10 to-emerald-500/10 border border-skinny-green/30 mb-3">
+              <div className="flex items-center gap-3 mb-2">
+                <div className="p-2 rounded-lg bg-skinny-green/20">
+                  <Server size={18} className="text-skinny-green" />
                 </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <h4 className="font-medium text-white">Platform Mode Enabled</h4>
+                    <span className="px-2 py-0.5 rounded-full bg-skinny-green/20 text-skinny-green text-[10px] font-bold uppercase">
+                      Active
+                    </span>
+                  </div>
+                  <p className="text-xs text-zinc-400 mt-0.5">
+                    The AI Creative Director is configured by the platform administrator
+                  </p>
+                </div>
+              </div>
+              {platformModel && (
+                <div className="mt-3 pt-3 border-t border-white/10 flex items-center gap-2">
+                  <Cpu size={14} className="text-zinc-500" />
+                  <span className="text-xs text-zinc-400">Model:</span>
+                  <span className="text-xs text-white font-medium">
+                    {ORCHESTRATOR_MODELS.find(m => m.id === platformModel)?.name || platformModel}
+                  </span>
+                </div>
+              )}
+            </div>
+          ) : (
+            <>
+              {/* API Key Input - Only show when platform mode is disabled */}
+              <div className="p-4 rounded-xl bg-zinc-900/50 border border-zinc-800 mb-3">
+                <div className="flex items-center gap-2 mb-3">
+                  <Key size={16} className="text-skinny-yellow" />
+                  <span className="text-sm font-medium text-white">Google AI API Key</span>
+                  <a
+                    href="https://aistudio.google.com/apikey"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="ml-auto flex items-center gap-1 text-xs text-skinny-yellow hover:text-skinny-green transition-colors"
+                  >
+                    Get free key <ExternalLink size={12} />
+                  </a>
+                </div>
+
+                <div className="relative">
+                  <input
+                    type={showApiKey ? 'text' : 'password'}
+                    value={settings.googleApiKey}
+                    onChange={(e) => handleApiKeyChange(e.target.value)}
+                    placeholder="AIza..."
+                    className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2.5 pr-20 text-sm focus:outline-none focus:border-skinny-yellow/50 transition-colors font-mono"
+                  />
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                    <button
+                      onClick={() => setShowApiKey(!showApiKey)}
+                      className="p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-zinc-700 transition-colors"
+                    >
+                      {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between mt-3">
+                  <p className="text-[10px] text-zinc-600">
+                    Your key is stored locally and never sent to our servers
+                  </p>
+                  <button
+                    onClick={handleSaveApiKey}
+                    disabled={!settings.googleApiKey}
+                    className={cn(
+                      "px-3 py-1.5 rounded-lg text-xs font-bold uppercase transition-all",
+                      settings.googleApiKey
+                        ? apiKeySaved
+                          ? "bg-green-500/20 text-green-400"
+                          : "bg-skinny-yellow text-black hover:bg-skinny-green"
+                        : "bg-zinc-800 text-zinc-600 cursor-not-allowed"
+                    )}
+                  >
+                    {apiKeySaved ? 'Saved!' : 'Save'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Model Selector - Only show when platform mode is disabled */}
+              <button
+                onClick={() => setShowModelSelector(!showModelSelector)}
+                className="w-full p-4 rounded-xl bg-zinc-900/50 border border-zinc-800 hover:border-zinc-700 text-left transition-colors"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-zinc-800 text-skinny-yellow">
+                    <Cpu size={18} />
+                  </div>
+                  <div className="flex-1">
+                    <h4 className="font-medium text-white">Orchestrator Model</h4>
+                    <p className="text-xs text-zinc-500">{selectedModel.name}</p>
+                  </div>
+                  <ChevronRight
+                    size={18}
+                    className={cn(
+                      "text-zinc-600 transition-transform",
+                      showModelSelector && "rotate-90"
+                    )}
+                  />
+                </div>
+              </button>
+
+              <AnimatePresence>
+                {showModelSelector && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="space-y-2 pt-3">
+                      <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-2">Free Tier Models</p>
+                      {ORCHESTRATOR_MODELS.map(model => (
+                        <ModelCard
+                          key={model.id}
+                          model={model}
+                          isSelected={settings.selectedModelId === model.id}
+                          onSelect={() => handleModelSelect(model.id)}
+                        />
+                      ))}
+
+                      {/* Voice models section - coming soon */}
+                      <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-2 mt-4 flex items-center gap-2">
+                        Voice Mode <span className="text-purple-400">(Coming Soon)</span>
+                      </p>
+                      {VOICE_MODELS.map(model => (
+                        <div key={model.id} className="opacity-50 cursor-not-allowed">
+                          <ModelCard
+                            model={model}
+                            isSelected={false}
+                            onSelect={() => {}}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </>
+          )}
         </motion.div>
 
         {/* Account Section */}
@@ -718,6 +785,35 @@ export function SettingsView({ initialPanel = 'main' }: SettingsViewProps) {
             />
           </div>
         </motion.div>
+
+        {/* Admin Section - Only visible to admins */}
+        {isAdmin(whop?.id) && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.35 }}
+            className="mb-8"
+          >
+            <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-3">Administration</h3>
+            <div className="space-y-2">
+              <Link href="/admin">
+                <motion.div
+                  whileHover={{ scale: 1.01 }}
+                  className="w-full flex items-center gap-4 p-4 rounded-xl bg-gradient-to-r from-purple-900/30 to-pink-900/30 border border-purple-700/50 hover:border-purple-600 text-left transition-colors"
+                >
+                  <div className="p-2 rounded-lg bg-purple-800/50 text-purple-300">
+                    <Settings2 size={18} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="font-medium text-white">Admin Dashboard</h3>
+                    <p className="text-xs text-zinc-400 truncate">Manage models, users, and analytics</p>
+                  </div>
+                  <ChevronRight size={18} className="text-purple-400" />
+                </motion.div>
+              </Link>
+            </div>
+          </motion.div>
+        )}
 
         {/* Version Info */}
         <motion.div

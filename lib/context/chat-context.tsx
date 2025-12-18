@@ -37,11 +37,19 @@ export interface GenerationResult {
   status: 'planning' | 'generating' | 'complete' | 'error'
   model: string
   params: Record<string, any>
+  generationId?: string  // Database ID for frontend polling when pending
   result?: {
     imageUrl: string
+    outputUrls?: string[]  // For sequential generation (multiple images)
     prompt: string
+    pending?: boolean  // True if still processing in background
+    message?: string   // Message to display when pending
   }
   error?: string
+  // Balance error fields
+  code?: string
+  required?: number  // cents required for generation
+  available?: number // cents available in balance
 }
 
 export interface ChatMessage {
@@ -56,7 +64,8 @@ export interface ChatMessage {
 
 // Conversation type for chat history
 export interface Conversation {
-  id: string
+  id: string  // Local ID (can be any format)
+  serverId?: string  // Server-side UUID from Supabase (for syncing)
   title: string
   messages: ChatMessage[]
   createdAt: Date
@@ -235,6 +244,12 @@ interface ChatContextValue {
   // Generation completion callback (to refresh gallery/library)
   onGenerationComplete: (() => void) | null
   setOnGenerationComplete: (callback: (() => void) | null) => void
+  // Insufficient balance callback (to show modal from app context)
+  onInsufficientBalance: ((required: number, available: number, modelName?: string) => void) | null
+  setOnInsufficientBalance: (callback: ((required: number, available: number, modelName?: string) => void) | null) => void
+  // Platform orchestration status
+  platformEnabled: boolean
+  platformLoading: boolean
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null)
@@ -249,6 +264,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(chatReducer, initialState)
   const [onSkillCreationCallback, setOnSkillCreationCallback] = useState<((skill: SkillCreationData) => void) | null>(null)
   const [onGenerationCompleteCallback, setOnGenerationCompleteCallback] = useState<(() => void) | null>(null)
+  const [onInsufficientBalanceCallback, setOnInsufficientBalanceCallback] = useState<((required: number, available: number, modelName?: string) => void) | null>(null)
+
+  // Platform orchestration status
+  const [platformEnabled, setPlatformEnabled] = useState(false)
+  const [platformLoading, setPlatformLoading] = useState(true)
 
   const addMessage = useCallback((message: Omit<ChatMessage, 'id' | 'timestamp'>) => {
     const id = generateId()
@@ -291,12 +311,120 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     dispatch({ type: 'UPDATE_GENERATION_STATUS', payload: { messageId, generation } })
   }, [])
 
+  // Poll for generation completion when server returns a pending generationId
+  const pollForGenerationComplete = useCallback(async (
+    generationId: string,
+    messageId: string,
+    model: string,
+    params: Record<string, any>
+  ) => {
+    const POLL_INTERVAL_MS = 3000 // 3 seconds
+    const POLL_TIMEOUT_MS = 300000 // 5 minutes max
+    const startTime = Date.now()
+
+    console.log('[ChatContext] Starting poll for generation:', generationId)
+
+    while (Date.now() - startTime < POLL_TIMEOUT_MS) {
+      await new Promise(r => setTimeout(r, POLL_INTERVAL_MS))
+
+      try {
+        // Use Whop auth headers for the polling request
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+
+        // Get Whop token from localStorage (dev mode) or cookies
+        if (typeof window !== 'undefined') {
+          // First check localStorage (dev mode)
+          const devToken = localStorage.getItem('whop-dev-token')
+          const devUserId = localStorage.getItem('whop-dev-user-id')
+
+          if (devToken) {
+            headers['x-whop-user-token'] = devToken
+          }
+          if (devUserId) {
+            headers['x-whop-user-id'] = devUserId
+          }
+
+          // Fallback to cookies if no localStorage values
+          if (!devToken) {
+            const whopToken = document.cookie
+              .split('; ')
+              .find(row => row.startsWith('whop_user_token='))
+              ?.split('=')[1]
+            if (whopToken) headers['x-whop-user-token'] = whopToken
+          }
+          if (!devUserId) {
+            const whopUserId = document.cookie
+              .split('; ')
+              .find(row => row.startsWith('whop_user_id='))
+              ?.split('=')[1]
+            if (whopUserId) headers['x-whop-user-id'] = whopUserId
+          }
+        }
+
+        const res = await fetch(`/api/generations/${generationId}`, { headers })
+        if (!res.ok) {
+          console.log('[ChatContext] Poll request failed:', res.status)
+          continue
+        }
+
+        const generation = await res.json()
+        console.log('[ChatContext] Poll result:', generation.replicate_status, 'URLs:', generation.output_urls?.length || 0)
+
+        if (generation.replicate_status === 'succeeded' && generation.output_urls?.length > 0) {
+          console.log('[ChatContext] Generation complete! Updating message.')
+          updateGenerationStatus(messageId, {
+            status: 'complete',
+            model,
+            params,
+            result: {
+              imageUrl: generation.output_urls[0],
+              outputUrls: generation.output_urls,
+              prompt: generation.prompt,
+            }
+          })
+          if (onGenerationCompleteCallback) {
+            console.log('[ChatContext] Calling generation complete callback')
+            onGenerationCompleteCallback()
+          }
+          return
+        } else if (generation.replicate_status === 'failed') {
+          console.log('[ChatContext] Generation failed:', generation.replicate_error)
+          updateGenerationStatus(messageId, {
+            status: 'error',
+            model,
+            params,
+            error: generation.replicate_error || 'Generation failed',
+          })
+          return
+        }
+        // Still processing - continue polling
+      } catch (err) {
+        console.error('[ChatContext] Polling error:', err)
+      }
+    }
+
+    // Timeout - show pending message
+    console.log('[ChatContext] Polling timed out after 5 minutes')
+    updateGenerationStatus(messageId, {
+      status: 'complete',
+      model,
+      params,
+      result: {
+        imageUrl: '',
+        outputUrls: [],
+        prompt: '',
+        pending: true,
+        message: 'Generation is taking longer than expected. Check your Library.',
+      }
+    })
+  }, [updateGenerationStatus, onGenerationCompleteCallback])
+
   const sendMessage = useCallback(async (content: string, attachments?: ChatAttachment[], skillsContext?: string, referencedSkills?: SkillForApi[], selectedGenerationModelId?: string) => {
     // Get API settings
     const settings = getApiSettings()
 
-    // Check for API key first
-    if (!settings.googleApiKey) {
+    // Check for API key - skip if platform mode is enabled (server will use platform key)
+    if (!platformEnabled && !settings.googleApiKey) {
       setError('Please add your Google AI API key in Settings to start chatting.', 'NO_API_KEY')
       return
     }
@@ -433,9 +561,37 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   status: parsed.generation.status,
                   model: parsed.generation.model,
                   hasResult: !!parsed.generation.result,
-                  imageUrl: parsed.generation.result?.imageUrl?.slice(0, 60)
+                  imageUrl: parsed.generation.result?.imageUrl?.slice(0, 60),
+                  outputUrlsCount: parsed.generation.result?.outputUrls?.length,
+                  code: parsed.generation.code,
+                  fullGeneration: JSON.stringify(parsed.generation).slice(0, 500)
                 })
                 updateGenerationStatus(assistantMessageId, parsed.generation)
+
+                // If we received a generationId but status is still 'generating', start frontend polling
+                // This happens when the server-side generation takes longer than Netlify's timeout
+                if (parsed.generation.status === 'generating' && parsed.generation.generationId) {
+                  console.log('[ChatContext] Starting frontend poll for generation:', parsed.generation.generationId)
+                  pollForGenerationComplete(
+                    parsed.generation.generationId,
+                    assistantMessageId,
+                    parsed.generation.model,
+                    parsed.generation.params
+                  )
+                }
+
+                // Check for insufficient balance error
+                if (parsed.generation.status === 'error' && parsed.generation.code === 'INSUFFICIENT_BALANCE') {
+                  console.log('[ChatContext] Insufficient balance detected - triggering modal')
+                  if (onInsufficientBalanceCallback) {
+                    onInsufficientBalanceCallback(
+                      parsed.generation.required || 0,
+                      parsed.generation.available || 0,
+                      parsed.generation.model
+                    )
+                  }
+                }
+
                 // When generation completes successfully, trigger refresh callback
                 if (parsed.generation.status === 'complete' && onGenerationCompleteCallback) {
                   console.log('[ChatContext] Generation complete - calling refresh callback')
@@ -466,7 +622,25 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     } finally {
       setLoading(false)
     }
-  }, [state.messages, addMessage, appendToMessage, updateMessage, updateGenerationStatus, setLoading, setError, onSkillCreationCallback, onGenerationCompleteCallback])
+  }, [state.messages, addMessage, appendToMessage, updateMessage, updateGenerationStatus, pollForGenerationComplete, setLoading, setError, onSkillCreationCallback, onGenerationCompleteCallback, onInsufficientBalanceCallback, platformEnabled])
+
+  // Check platform orchestration status on mount
+  useEffect(() => {
+    async function checkPlatformStatus() {
+      try {
+        const res = await fetch('/api/platform-status')
+        if (res.ok) {
+          const data = await res.json()
+          setPlatformEnabled(data.platformOrchestrationEnabled)
+        }
+      } catch (err) {
+        console.error('Failed to check platform status:', err)
+      } finally {
+        setPlatformLoading(false)
+      }
+    }
+    checkPlatformStatus()
+  }, [])
 
   // Load conversations from localStorage on mount
   useEffect(() => {
@@ -506,26 +680,50 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   // Track last saved message index to avoid re-saving messages
   const lastSavedIndexRef = useRef<Map<string, number>>(new Map())
 
+  // Get auth headers helper
+  const getAuthHeaders = useCallback((): Record<string, string> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (typeof window !== 'undefined') {
+      const devToken = localStorage.getItem('whop-dev-token')
+      const devUserId = localStorage.getItem('whop-dev-user-id')
+      if (devToken) headers['x-whop-user-token'] = devToken
+      if (devUserId) headers['x-whop-user-id'] = devUserId
+    }
+    return headers
+  }, [])
+
   // Sync conversation to Supabase API
-  const syncToSupabase = useCallback(async (conversationId: string, messages: ChatMessage[], title: string, isNew: boolean) => {
+  // Returns the server-side UUID if successful
+  const syncToSupabase = useCallback(async (localId: string, serverId: string | undefined, messages: ChatMessage[], title: string, isNew: boolean): Promise<string | null> => {
     try {
-      if (isNew) {
+      const authHeaders = getAuthHeaders()
+
+      if (isNew || !serverId) {
         // Create conversation in Supabase
         const createRes = await fetch('/api/conversations', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authHeaders,
           body: JSON.stringify({ title }),
         })
 
         if (createRes.ok) {
           const { conversation } = await createRes.json()
           if (conversation?.id) {
+            const serverUUID = conversation.id
+            console.log('[ChatContext] Created server conversation:', serverUUID)
+
+            // Update local conversation with server ID
+            dispatch({
+              type: 'UPDATE_CONVERSATION',
+              payload: { id: localId, updates: { serverId: serverUUID } },
+            })
+
             // Save all messages to the new conversation
             for (const msg of messages) {
               if (msg.role === 'user' || (msg.role === 'assistant' && !msg.isStreaming)) {
-                await fetch(`/api/conversations/${conversation.id}/messages`, {
+                await fetch(`/api/conversations/${serverUUID}/messages`, {
                   method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
+                  headers: authHeaders,
                   body: JSON.stringify({
                     role: msg.role,
                     content: msg.content,
@@ -533,36 +731,50 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 })
               }
             }
-            lastSavedIndexRef.current.set(conversation.id, messages.length - 1)
-            return conversation.id
+            lastSavedIndexRef.current.set(serverUUID, messages.length - 1)
+            return serverUUID
           }
         }
       } else {
-        // Get last saved index for this conversation
-        const lastSavedIndex = lastSavedIndexRef.current.get(conversationId) ?? -1
+        // Use server ID for API calls (UUID format)
+        const lastSavedIndex = lastSavedIndexRef.current.get(serverId) ?? -1
 
         // Only save new messages that haven't been saved yet
         for (let i = lastSavedIndex + 1; i < messages.length; i++) {
           const msg = messages[i]
           if (msg.role === 'user' || (msg.role === 'assistant' && !msg.isStreaming)) {
-            await fetch(`/api/conversations/${conversationId}/messages`, {
+            await fetch(`/api/conversations/${serverId}/messages`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: authHeaders,
               body: JSON.stringify({
                 role: msg.role,
                 content: msg.content,
               }),
             })
-            lastSavedIndexRef.current.set(conversationId, i)
+            lastSavedIndexRef.current.set(serverId, i)
           }
         }
+        return serverId
       }
     } catch (error) {
       // Silently fail for unauthenticated users - localStorage still works
       console.log('Supabase sync skipped (user may not be authenticated):', error)
     }
     return null
-  }, [])
+  }, [getAuthHeaders])
+
+  // Strip large base64 data from messages before saving to localStorage
+  // This prevents quota exceeded errors from image attachments
+  const stripBase64FromMessages = (messages: ChatMessage[]): ChatMessage[] => {
+    return messages.map(msg => ({
+      ...msg,
+      attachments: msg.attachments?.map(att => ({
+        ...att,
+        base64: undefined, // Remove base64 data
+        file: undefined,   // Remove File objects (can't be serialized anyway)
+      })),
+    }))
+  }
 
   // Save current conversation (auto-save when messages change)
   const saveCurrentConversation = useCallback(() => {
@@ -571,48 +783,65 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     const now = new Date()
     const title = generateTitle(state.messages)
 
+    // Strip base64 for localStorage storage (keeps URLs for reference)
+    const messagesForStorage = stripBase64FromMessages(state.messages)
+
     if (state.currentConversationId) {
-      // Update existing conversation locally
+      // Find existing conversation to get serverId
+      const existingConv = state.conversations.find(c => c.id === state.currentConversationId)
+      const serverId = existingConv?.serverId
+
+      // Update existing conversation locally (without base64)
       dispatch({
         type: 'UPDATE_CONVERSATION',
         payload: {
           id: state.currentConversationId,
           updates: {
-            messages: state.messages,
+            messages: messagesForStorage,
             updatedAt: now,
             title,
           },
         },
       })
 
-      // Sync to Supabase (for authenticated users)
-      syncToSupabase(state.currentConversationId, state.messages, title, false)
+      // Sync to Supabase (for authenticated users) - uses serverId (UUID)
+      syncToSupabase(state.currentConversationId, serverId, state.messages, title, false)
     } else {
       // Create new conversation locally
       const id = `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
       const newConversation: Conversation = {
         id,
         title,
-        messages: state.messages,
+        messages: messagesForStorage, // Store without base64
         createdAt: now,
         updatedAt: now,
       }
       dispatch({ type: 'ADD_CONVERSATION', payload: newConversation })
       dispatch({ type: 'SET_CONVERSATION_ID', payload: id })
 
-      // Sync to Supabase (for authenticated users)
-      syncToSupabase(id, state.messages, title, true)
+      // Sync to Supabase (for authenticated users) - will get serverId back
+      syncToSupabase(id, undefined, state.messages, title, true)
     }
-  }, [state.messages, state.currentConversationId, syncToSupabase])
+  }, [state.messages, state.currentConversationId, state.conversations, syncToSupabase])
+
+  // Use ref to avoid circular dependency in auto-save effect
+  const saveConversationRef = useRef(saveCurrentConversation)
+  saveConversationRef.current = saveCurrentConversation
 
   // Auto-save when messages change (after at least one user message)
+  // Use debounce to prevent rapid re-saves
+  const lastSaveTimeRef = useRef<number>(0)
   useEffect(() => {
     const hasUserMessage = state.messages.some(m => m.role === 'user')
     const hasCompletedMessage = state.messages.some(m => m.role === 'assistant' && !m.isStreaming)
-    if (hasUserMessage && hasCompletedMessage && !state.isLoading) {
-      saveCurrentConversation()
+    const now = Date.now()
+
+    // Only save if conditions met and at least 1 second since last save
+    if (hasUserMessage && hasCompletedMessage && !state.isLoading && now - lastSaveTimeRef.current > 1000) {
+      lastSaveTimeRef.current = now
+      saveConversationRef.current()
     }
-  }, [state.messages, state.isLoading, saveCurrentConversation])
+  }, [state.messages, state.isLoading])
 
   // Create a new conversation
   const createNewConversation = useCallback(() => {
@@ -675,6 +904,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setOnSkillCreation: setOnSkillCreationCallback,
     onGenerationComplete: onGenerationCompleteCallback,
     setOnGenerationComplete: setOnGenerationCompleteCallback,
+    onInsufficientBalance: onInsufficientBalanceCallback,
+    setOnInsufficientBalance: setOnInsufficientBalanceCallback,
+    platformEnabled,
+    platformLoading,
   }
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>

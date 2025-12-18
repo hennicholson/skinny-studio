@@ -12,6 +12,9 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
     "@google/generative-ai": "^0.24.1",
     "@supabase/supabase-js": "^2.87.1",
     "@types/node": "^24.10.2",
@@ -20,6 +23,7 @@
     "@whop/iframe": "^0.0.3",
     "@whop/react": "^0.2.36",
     "@whop/sdk": "^0.0.16",
+    "canvas-confetti": "^1.9.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "framer-motion": "^12.23.25",
@@ -35,8 +39,10 @@
     "uuid": "^13.0.0"
   },
   "devDependencies": {
+    "@netlify/functions": "^5.1.1",
     "@playwright/test": "^1.57.0",
     "@tailwindcss/typography": "^0.5.19",
+    "@types/canvas-confetti": "^1.9.0",
     "@types/react-dom": "^19.2.3",
     "@types/uuid": "^10.0.0",
     "@whop-apps/dev-proxy": "^0.0.1-canary.117",

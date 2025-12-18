@@ -31,6 +31,11 @@ interface TransactionMetadata {
   cost_per_second_cents?: number
   resolution_multiplier?: number
   is_lifetime_user?: boolean
+  // Sequential generation fields
+  images_generated?: number
+  sequential_mode?: boolean
+  cost_per_image_cents?: number
+  total_cost_cents?: number
 }
 
 interface Transaction {
@@ -65,8 +70,9 @@ interface TransactionsResponse {
   summary: TransactionSummary
 }
 
-function formatCents(cents: number): string {
-  return (Math.abs(cents) / 100).toFixed(2)
+function formatDollars(dollars: number): string {
+  // Database stores amount in dollars (e.g., 0.14 for 14 cents)
+  return Math.abs(dollars).toFixed(2)
 }
 
 function formatDate(dateString: string): string {
@@ -143,6 +149,11 @@ function TransactionCard({ transaction }: { transaction: Transaction }) {
                   Video
                 </span>
               )}
+              {!isVideo && metadata.images_generated && metadata.images_generated > 1 && (
+                <span className="px-1.5 py-0.5 rounded text-[10px] bg-skinny-yellow/20 text-skinny-yellow">
+                  {metadata.images_generated} images
+                </span>
+              )}
               {isUsage && metadata?.is_lifetime_user && (
                 <span className="px-1.5 py-0.5 rounded text-[10px] bg-green-500/20 text-green-400">
                   Lifetime
@@ -171,7 +182,7 @@ function TransactionCard({ transaction }: { transaction: Transaction }) {
               {isUsage && metadata?.is_lifetime_user ? (
                 'FREE'
               ) : (
-                <>{isUsage ? '-' : '+'}${formatCents(transaction.amount_charged || Math.abs(transaction.amount))}</>
+                <>{isUsage ? '-' : '+'}${formatDollars(transaction.amount_charged || Math.abs(transaction.amount))}</>
               )}
             </div>
             {metadata.pricing_type === 'per_second' && metadata.cost_per_second_cents && !metadata.is_lifetime_user && (
@@ -227,6 +238,20 @@ function TransactionCard({ transaction }: { transaction: Transaction }) {
                   <div className="bg-zinc-800/50 rounded-lg p-2">
                     <span className="text-[10px] text-zinc-600 uppercase">Multiplier</span>
                     <p className="text-sm text-white font-medium">{metadata.resolution_multiplier || 1.0}x</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Sequential Generation Breakdown */}
+              {metadata.sequential_mode && metadata.images_generated && metadata.images_generated > 1 && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="bg-zinc-800/50 rounded-lg p-2">
+                    <span className="text-[10px] text-zinc-600 uppercase">Images Generated</span>
+                    <p className="text-sm text-white font-medium">{metadata.images_generated}</p>
+                  </div>
+                  <div className="bg-zinc-800/50 rounded-lg p-2">
+                    <span className="text-[10px] text-zinc-600 uppercase">Cost Per Image</span>
+                    <p className="text-sm text-white font-medium">{metadata.cost_per_image_cents}c</p>
                   </div>
                 </div>
               )}
@@ -359,7 +384,7 @@ export function SpendingLog() {
               <TrendingDown size={14} className="text-red-400" />
               <span>Total Spent</span>
             </div>
-            <p className="text-xl font-bold text-white">${formatCents(summary.totalSpentCents)}</p>
+            <p className="text-xl font-bold text-white">${formatDollars(summary.totalSpentCents)}</p>
           </div>
           <div className="p-4 rounded-xl bg-zinc-900/50 border border-zinc-800">
             <div className="flex items-center gap-2 text-xs text-zinc-500 mb-1">

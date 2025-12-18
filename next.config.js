@@ -20,6 +20,11 @@ const nextConfig = {
         protocol: 'https',
         hostname: 'osupcybolqbtnzbiszkl.supabase.co',
       },
+      {
+        // Whop favicon
+        protocol: 'https',
+        hostname: 'docs.whop.com',
+      },
     ],
   },
   async rewrites() {

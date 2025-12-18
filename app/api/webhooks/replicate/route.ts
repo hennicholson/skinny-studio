@@ -1,8 +1,29 @@
 import { NextResponse } from 'next/server'
 import { sbAdmin } from '@/lib/supabaseAdmin'
 import { v4 as uuidv4 } from 'uuid'
+import crypto from 'crypto'
 
 export const runtime = 'nodejs'
+
+// Verify Replicate webhook signature (HMAC-SHA256)
+function verifyReplicateSignature(body: string, signature: string | null, secret: string): boolean {
+  if (!secret || !signature) return false
+
+  try {
+    // Replicate uses HMAC-SHA256 for webhook signing
+    const hmac = crypto.createHmac('sha256', secret)
+    hmac.update(body)
+    const expected = 'sha256=' + hmac.digest('hex')
+
+    // Use timing-safe comparison to prevent timing attacks
+    return crypto.timingSafeEqual(
+      Buffer.from(signature),
+      Buffer.from(expected)
+    )
+  } catch {
+    return false
+  }
+}
 
 // Replicate webhook payload type
 interface ReplicateWebhookPayload {
@@ -90,7 +111,21 @@ async function saveImageToStorage(imageUrl: string, userId?: string): Promise<st
 
 export async function POST(request: Request) {
   try {
-    const payload: ReplicateWebhookPayload = await request.json()
+    // Read body as text first for signature verification
+    const body = await request.text()
+    const signature = request.headers.get('webhook-signature') ||
+                      request.headers.get('x-replicate-signature')
+    const secret = process.env.REPLICATE_WEBHOOK_SECRET
+
+    // Verify signature if secret is configured (fail closed)
+    if (secret) {
+      if (!verifyReplicateSignature(body, signature, secret)) {
+        console.error('[Replicate Webhook] Invalid signature')
+        return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
+      }
+    }
+
+    const payload: ReplicateWebhookPayload = JSON.parse(body)
     console.log('[Replicate Webhook] Received:', payload.id, 'Status:', payload.status)
 
     // Find the generation record by replicate_prediction_id

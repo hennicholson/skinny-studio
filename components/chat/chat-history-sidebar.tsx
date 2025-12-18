@@ -1,24 +1,31 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, memo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { cn } from '@/lib/utils'
 import {
   MessageSquare,
   Plus,
-  ChevronLeft,
-  ChevronRight,
   Trash2,
   Edit2,
   Check,
   X,
-  Clock
+  Sparkles,
 } from 'lucide-react'
 import { useChat, Conversation } from '@/lib/context/chat-context'
+import {
+  Sidebar,
+  SidebarBody,
+  SidebarSection,
+  SidebarLogo,
+  useSidebar,
+} from '@/components/ui/sidebar'
 
-interface ChatHistorySidebarProps {
-  isOpen: boolean
-  onToggle: () => void
+// Smooth spring animation config
+const smoothSpring = {
+  type: "spring" as const,
+  stiffness: 300,
+  damping: 30,
 }
 
 // Format relative time
@@ -30,14 +37,14 @@ function formatRelativeTime(date: Date): string {
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
 
   if (diffMins < 1) return 'Just now'
-  if (diffMins < 60) return `${diffMins}m ago`
-  if (diffHours < 24) return `${diffHours}h ago`
-  if (diffDays < 7) return `${diffDays}d ago`
-  return date.toLocaleDateString()
+  if (diffMins < 60) return `${diffMins}m`
+  if (diffHours < 24) return `${diffHours}h`
+  if (diffDays < 7) return `${diffDays}d`
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
-// Conversation item component
-function ConversationItem({
+// Conversation item component - memoized for performance
+const ConversationItem = memo(function ConversationItem({
   conversation,
   isActive,
   onSelect,
@@ -50,9 +57,9 @@ function ConversationItem({
   onDelete: () => void
   onRename: (title: string) => void
 }) {
+  const { open, animate } = useSidebar()
   const [isEditing, setIsEditing] = useState(false)
   const [editTitle, setEditTitle] = useState(conversation.title)
-  const [showActions, setShowActions] = useState(false)
 
   const handleSaveRename = useCallback(() => {
     if (editTitle.trim()) {
@@ -67,24 +74,28 @@ function ConversationItem({
   }, [conversation.title])
 
   return (
-    <div
+    <motion.div
+      layout
+      initial={{ opacity: 0, x: -8 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: -8 }}
+      transition={smoothSpring}
       className={cn(
-        "group relative px-3 py-2.5 rounded-lg cursor-pointer transition-all",
+        "relative group/conv rounded-xl cursor-pointer",
+        "transition-colors duration-150 ease-out",
         isActive
-          ? "bg-skinny-yellow/20 border border-skinny-yellow/40"
-          : "hover:bg-white/[0.05] border border-transparent hover:border-white/[0.08]"
+          ? "bg-white/[0.06]"
+          : "hover:bg-white/[0.03]"
       )}
       onClick={() => !isEditing && onSelect()}
-      onMouseEnter={() => setShowActions(true)}
-      onMouseLeave={() => setShowActions(false)}
     >
-      {isEditing ? (
-        <div className="flex items-center gap-2">
+      {isEditing && open ? (
+        <div className="flex items-center gap-2 px-3 py-2">
           <input
             type="text"
             value={editTitle}
             onChange={(e) => setEditTitle(e.target.value)}
-            className="flex-1 bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-skinny-yellow/50"
+            className="flex-1 bg-zinc-800/80 border border-zinc-700/50 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-skinny-yellow/40 transition-colors"
             autoFocus
             onKeyDown={(e) => {
               if (e.key === 'Enter') handleSaveRename()
@@ -94,69 +105,88 @@ function ConversationItem({
           />
           <button
             onClick={(e) => { e.stopPropagation(); handleSaveRename() }}
-            className="p-1 rounded text-skinny-yellow hover:bg-white/10"
+            className="p-1.5 rounded-md text-skinny-green hover:bg-white/10 transition-colors"
           >
             <Check size={14} />
           </button>
           <button
             onClick={(e) => { e.stopPropagation(); handleCancelRename() }}
-            className="p-1 rounded text-zinc-400 hover:bg-white/10"
+            className="p-1.5 rounded-md text-zinc-500 hover:bg-white/10 transition-colors"
           >
             <X size={14} />
           </button>
         </div>
       ) : (
-        <>
-          <div className="flex items-start gap-2">
-            <MessageSquare size={14} className={cn(
-              "mt-0.5 flex-shrink-0",
-              isActive ? "text-skinny-yellow" : "text-zinc-500"
-            )} />
-            <div className="flex-1 min-w-0">
-              <p className={cn(
-                "text-sm font-medium truncate",
-                isActive ? "text-white" : "text-zinc-300"
-              )}>
-                {conversation.title}
-              </p>
-              <p className="text-[10px] text-zinc-500 flex items-center gap-1 mt-0.5">
-                <Clock size={10} />
-                {formatRelativeTime(conversation.updatedAt)}
-              </p>
-            </div>
+        <div className="flex items-center gap-2.5 px-3 py-2.5">
+          {/* Active indicator - smooth pill on left */}
+          <motion.div
+            className="absolute left-0 top-1/2 -translate-y-1/2 w-[2px] rounded-full bg-gradient-to-b from-skinny-yellow to-skinny-green"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{
+              height: isActive ? 16 : 0,
+              opacity: isActive ? 1 : 0
+            }}
+            transition={smoothSpring}
+          />
+
+          {/* Icon with subtle glow when active */}
+          <div className={cn(
+            "flex items-center justify-center shrink-0 w-7 h-7 rounded-lg transition-all duration-200",
+            isActive
+              ? "bg-skinny-yellow/10 text-skinny-yellow"
+              : "text-zinc-600 group-hover/conv:text-zinc-400"
+          )}>
+            <MessageSquare size={14} strokeWidth={1.5} />
           </div>
 
-          {/* Action buttons */}
-          <AnimatePresence>
-            {showActions && !isActive && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1"
-              >
-                <button
-                  onClick={(e) => { e.stopPropagation(); setIsEditing(true) }}
-                  className="p-1.5 rounded-md bg-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-700 transition-colors"
-                >
-                  <Edit2 size={12} />
-                </button>
-                <button
-                  onClick={(e) => { e.stopPropagation(); onDelete() }}
-                  className="p-1.5 rounded-md bg-zinc-800 text-zinc-400 hover:text-red-400 hover:bg-zinc-700 transition-colors"
-                >
-                  <Trash2 size={12} />
-                </button>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </>
-      )}
-    </div>
-  )
-}
+          {/* Content */}
+          <motion.div
+            animate={{
+              display: animate ? (open ? "flex" : "none") : "flex",
+              opacity: animate ? (open ? 1 : 0) : 1,
+            }}
+            transition={{ duration: 0.15 }}
+            className="flex-1 min-w-0 flex items-center justify-between gap-2"
+          >
+            <p className={cn(
+              "text-[13px] font-medium truncate transition-colors duration-150",
+              isActive ? "text-white" : "text-zinc-400 group-hover/conv:text-zinc-300"
+            )}>
+              {conversation.title}
+            </p>
 
-export function ChatHistorySidebar({ isOpen, onToggle }: ChatHistorySidebarProps) {
+            {/* Time badge - subtle */}
+            <span className="text-[10px] text-zinc-600 tabular-nums shrink-0">
+              {formatRelativeTime(conversation.updatedAt)}
+            </span>
+          </motion.div>
+
+          {/* Action buttons - fade in on hover */}
+          {open && (
+            <div className="flex items-center gap-0.5 opacity-0 group-hover/conv:opacity-100 transition-opacity duration-150">
+              <button
+                onClick={(e) => { e.stopPropagation(); setIsEditing(true) }}
+                className="p-1.5 rounded-md text-zinc-600 hover:text-white hover:bg-white/10 transition-colors"
+              >
+                <Edit2 size={12} />
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); onDelete() }}
+                className="p-1.5 rounded-md text-zinc-600 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </motion.div>
+  )
+})
+
+// Inner content component
+function ChatSidebarContent() {
+  const { open } = useSidebar()
   const {
     state,
     createNewConversation,
@@ -168,118 +198,102 @@ export function ChatHistorySidebar({ isOpen, onToggle }: ChatHistorySidebarProps
   const { conversations, currentConversationId } = state
 
   return (
-    <>
-      {/* Sidebar Toggle Button - Always visible on left edge */}
-      <button
-        onClick={onToggle}
-        className={cn(
-          "fixed left-0 top-1/2 -translate-y-1/2 z-40",
-          "w-6 h-16 rounded-r-lg",
-          "bg-zinc-900/90 border border-l-0 border-zinc-800",
-          "flex items-center justify-center",
-          "text-zinc-400 hover:text-white hover:bg-zinc-800",
-          "transition-all duration-200",
-          isOpen && "opacity-0 pointer-events-none"
-        )}
-        title="Open chat history"
-      >
-        <ChevronRight size={16} />
-      </button>
+    <SidebarBody className="justify-between gap-6">
+      <div className="flex flex-1 flex-col overflow-x-hidden overflow-y-auto">
+        {/* Logo */}
+        <SidebarLogo
+          icon={
+            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-skinny-yellow to-skinny-green flex items-center justify-center shadow-lg shadow-skinny-yellow/20">
+              <Sparkles size={16} className="text-black" />
+            </div>
+          }
+          title="Skinny Studio"
+          subtitle="AI Creation"
+        />
 
-      {/* Sidebar Panel */}
-      <AnimatePresence>
-        {isOpen && (
-          <>
-            {/* Backdrop */}
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-black/50 z-40 md:hidden"
-              onClick={onToggle}
-            />
-
-            {/* Sidebar */}
-            <motion.div
-              initial={{ x: -280 }}
-              animate={{ x: 0 }}
-              exit={{ x: -280 }}
-              transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-              className={cn(
-                "fixed left-0 top-0 bottom-0 z-50",
-                "w-[280px] bg-zinc-950 border-r border-zinc-800",
-                "flex flex-col"
-              )}
+        {/* New Chat Button */}
+        <div className="px-1 mb-4">
+          <motion.button
+            onClick={createNewConversation}
+            className={cn(
+              "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl",
+              "bg-gradient-to-r from-skinny-yellow/10 to-skinny-green/10",
+              "border border-skinny-yellow/20",
+              "text-skinny-yellow hover:from-skinny-yellow/20 hover:to-skinny-green/20",
+              "transition-all duration-200 font-medium text-[13px]"
+            )}
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+          >
+            <Plus size={16} strokeWidth={2.5} />
+            <motion.span
+              animate={{
+                display: open ? "inline-block" : "none",
+                opacity: open ? 1 : 0,
+              }}
+              transition={{ duration: 0.2, delay: open ? 0.1 : 0 }}
             >
-              {/* Header */}
-              <div className="flex items-center justify-between px-4 py-4 border-b border-zinc-800">
-                <h2 className="text-sm font-bold uppercase tracking-wide text-white">
-                  Chat History
-                </h2>
-                <button
-                  onClick={onToggle}
-                  className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-white/10 transition-colors"
-                >
-                  <ChevronLeft size={18} />
-                </button>
-              </div>
+              New Chat
+            </motion.span>
+          </motion.button>
+        </div>
 
-              {/* New Chat Button */}
-              <div className="px-3 py-3">
-                <button
-                  onClick={() => {
-                    createNewConversation()
-                  }}
-                  className={cn(
-                    "w-full flex items-center gap-2 px-3 py-2.5 rounded-lg",
-                    "bg-skinny-yellow/10 border border-skinny-yellow/30",
-                    "text-skinny-yellow hover:bg-skinny-yellow/20",
-                    "transition-colors font-medium text-sm"
-                  )}
-                >
-                  <Plus size={16} />
-                  <span>New Chat</span>
-                </button>
-              </div>
+        {/* Conversations Section */}
+        <SidebarSection title="History">
+          {conversations.length === 0 ? (
+            open && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="px-3 py-6 text-center"
+              >
+                <div className="w-10 h-10 mx-auto mb-2 rounded-xl bg-zinc-800/50 flex items-center justify-center">
+                  <MessageSquare size={18} className="text-zinc-600" />
+                </div>
+                <p className="text-[12px] text-zinc-600">No conversations yet</p>
+                <p className="text-[11px] text-zinc-700 mt-1">Start chatting to create history</p>
+              </motion.div>
+            )
+          ) : (
+            <div className="space-y-1">
+              {conversations.map((conv) => (
+                <ConversationItem
+                  key={conv.id}
+                  conversation={conv}
+                  isActive={conv.id === currentConversationId}
+                  onSelect={() => switchConversation(conv.id)}
+                  onDelete={() => deleteConversation(conv.id)}
+                  onRename={(title) => renameConversation(conv.id, title)}
+                />
+              ))}
+            </div>
+          )}
+        </SidebarSection>
+      </div>
 
-              {/* Conversations List */}
-              <div className="flex-1 overflow-y-auto px-3 pb-3">
-                {conversations.length === 0 ? (
-                  <div className="text-center py-8">
-                    <MessageSquare size={32} className="mx-auto text-zinc-600 mb-2" />
-                    <p className="text-sm text-zinc-500">No conversations yet</p>
-                    <p className="text-xs text-zinc-600 mt-1">
-                      Start chatting to create history
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-1">
-                    {conversations.map((conv) => (
-                      <ConversationItem
-                        key={conv.id}
-                        conversation={conv}
-                        isActive={conv.id === currentConversationId}
-                        onSelect={() => {
-                          switchConversation(conv.id)
-                        }}
-                        onDelete={() => deleteConversation(conv.id)}
-                        onRename={(title) => renameConversation(conv.id, title)}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
+      {/* Footer */}
+      {open && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="px-4 py-3 border-t border-white/[0.04]"
+        >
+          <p className="text-[11px] sm:text-[10px] text-zinc-600 text-center">
+            {conversations.length} conversation{conversations.length !== 1 ? 's' : ''}
+          </p>
+        </motion.div>
+      )}
+    </SidebarBody>
+  )
+}
 
-              {/* Footer */}
-              <div className="px-4 py-3 border-t border-zinc-800">
-                <p className="text-[10px] text-zinc-600 text-center">
-                  {conversations.length} conversation{conversations.length !== 1 ? 's' : ''}
-                </p>
-              </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
-    </>
+// Main export
+export function ChatHistorySidebar() {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <Sidebar open={open} setOpen={setOpen} variant="overlay">
+      <ChatSidebarContent />
+    </Sidebar>
   )
 }
