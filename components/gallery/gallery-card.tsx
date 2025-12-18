@@ -66,7 +66,7 @@ export function GalleryCard({
       opacity: 1,
       rotateX: 0,
       transition: {
-        type: 'spring',
+        type: 'spring' as const,
         stiffness: 350,
         damping: 28,
         delay: index * 0.04,
