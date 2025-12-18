@@ -199,7 +199,7 @@ function ExploreCard({
       opacity: 1,
       rotate: rotation.current,
       transition: {
-        type: 'spring',
+        type: 'spring' as const,
         stiffness: 300,
         damping: 25,
         delay: index * 0.03 + Math.random() * 0.1,

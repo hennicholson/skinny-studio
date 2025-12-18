@@ -118,7 +118,7 @@ export function GalleryModal({
     visible: {
       opacity: 1,
       scale: 1,
-      transition: { type: 'spring', stiffness: 350, damping: 30 }
+      transition: { type: 'spring' as const, stiffness: 350, damping: 30 }
     },
     exit: { opacity: 0, scale: 0.95 }
   }
@@ -131,7 +131,7 @@ export function GalleryModal({
     center: {
       x: 0,
       opacity: 1,
-      transition: { type: 'spring', stiffness: 400, damping: 30 }
+      transition: { type: 'spring' as const, stiffness: 400, damping: 30 }
     },
     exit: (direction: number) => ({
       x: direction < 0 ? 300 : -300,
