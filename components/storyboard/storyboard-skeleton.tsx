@@ -9,7 +9,7 @@ const pulseAnimation = {
   transition: {
     duration: 1.5,
     repeat: Infinity,
-    ease: 'easeInOut',
+    ease: 'easeInOut' as const,
   },
 }
 
@@ -179,7 +179,7 @@ export function LoadingSpinner({ size = 20, className }: { size?: number; classN
   return (
     <motion.div
       animate={{ rotate: 360 }}
-      transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+      transition={{ duration: 1, repeat: Infinity, ease: 'linear' as const }}
       className={cn("border-2 border-zinc-700 border-t-skinny-yellow rounded-full", className)}
       style={{ width: size, height: size }}
     />

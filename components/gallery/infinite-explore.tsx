@@ -260,10 +260,7 @@ function ExploreCard({
               <LikeButton
                 isLiked={isLiked}
                 count={item.stats.likes}
-                onToggle={(e) => {
-                  e?.stopPropagation?.()
-                  onLike()
-                }}
+                onToggle={() => onLike()}
                 size="sm"
               />
               <div className="flex items-center gap-1 text-zinc-400">

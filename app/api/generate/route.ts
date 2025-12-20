@@ -570,6 +570,10 @@ export async function POST(request: Request) {
 
     // Create prediction (non-blocking start)
     console.log('[Generate] Creating prediction for:', modelOwner, modelName, modelVersion ? `version: ${modelVersion}` : 'latest')
+    console.log('[Generate] Full input object:', JSON.stringify(input, null, 2))
+    console.log('[Generate] image_input for seedream:', input.image_input)
+    console.log('[Generate] input_images for flux:', input.input_images)
+    console.log('[Generate] reference_images:', input.reference_images)
 
     // Webhook URL for Replicate to call when prediction completes
     // This ensures database gets updated even if this function times out

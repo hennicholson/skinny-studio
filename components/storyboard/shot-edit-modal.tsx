@@ -1,9 +1,9 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Film, Camera, Clock, Video, Image, Save, Sparkles, Trash2, ChevronDown, ImagePlus, Play, Volume2 } from 'lucide-react'
+import { X, Film, Camera, Clock, Video, Image, Save, Sparkles, Trash2, ChevronDown, ImagePlus, Play, Volume2, Check, Loader2, ImageOff, Layers } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { StoryboardShot, StoryboardEntity, UpdateShotInput } from '@/lib/types'
 import { EntityTypeBadge } from './entity-type-badge'
@@ -83,10 +83,11 @@ interface ShotEditModalProps {
   isOpen: boolean
   onClose: () => void
   shot: StoryboardShot | null
+  shots: StoryboardShot[]  // All shots for reference selection
   entities: StoryboardEntity[]
   onSave: (shotId: string, updates: UpdateShotInput) => Promise<void>
   onDelete: (shotId: string) => Promise<void>
-  onGenerate: (shotId: string) => Promise<void>
+  onGenerate: (shotId: string, options?: { referenceImages?: string[] }) => Promise<void>
 }
 
 const CAMERA_ANGLES = [
@@ -119,6 +120,7 @@ export function ShotEditModal({
   isOpen,
   onClose,
   shot,
+  shots,
   entities,
   onSave,
   onDelete,
@@ -134,6 +136,12 @@ export function ShotEditModal({
   const [modelSlug, setModelSlug] = useState('')
   const [prompt, setPrompt] = useState('')
   const [isSaving, setIsSaving] = useState(false)
+  const [selectedReferenceShots, setSelectedReferenceShots] = useState<string[]>([])
+  const [selectedReferenceEntities, setSelectedReferenceEntities] = useState<string[]>([])
+
+  // Real cost estimation state
+  const [estimatedCost, setEstimatedCost] = useState<number | null>(null)
+  const [costLoading, setCostLoading] = useState(false)
 
   // Filter models by media type
   const availableModels = useMemo(() => {
@@ -155,6 +163,85 @@ export function ShotEditModal({
     return getModelDurationOptions(selectedModel)
   }, [mediaType, selectedModel])
 
+  // Get completed shots for reference selection (excluding current shot)
+  const completedShots = useMemo(() => {
+    if (!shots || !shot) return []
+    return shots.filter(s =>
+      s.id !== shot.id &&
+      s.status === 'completed' &&
+      s.generatedImageUrl
+    )
+  }, [shots, shot])
+
+  // Get entities with images for reference selection
+  const entitiesWithImages = useMemo(() => {
+    return entities.filter(e => e.primaryImageUrl)
+  }, [entities])
+
+  // Toggle reference shot selection (shared max with entities)
+  const toggleReferenceShot = useCallback((shotId: string) => {
+    const maxRefs = selectedModel?.maxReferenceImages || 4
+    const totalSelected = selectedReferenceShots.length + selectedReferenceEntities.length
+    setSelectedReferenceShots(prev => {
+      if (prev.includes(shotId)) {
+        return prev.filter(id => id !== shotId)
+      }
+      if (totalSelected >= maxRefs) {
+        return prev // At max capacity
+      }
+      return [...prev, shotId]
+    })
+  }, [selectedModel, selectedReferenceShots.length, selectedReferenceEntities.length])
+
+  // Toggle reference entity selection (shared max with shots)
+  const toggleReferenceEntity = useCallback((entityId: string) => {
+    const maxRefs = selectedModel?.maxReferenceImages || 4
+    const totalSelected = selectedReferenceShots.length + selectedReferenceEntities.length
+    setSelectedReferenceEntities(prev => {
+      if (prev.includes(entityId)) {
+        return prev.filter(id => id !== entityId)
+      }
+      if (totalSelected >= maxRefs) {
+        return prev // At max capacity
+      }
+      return [...prev, entityId]
+    })
+  }, [selectedModel, selectedReferenceShots.length, selectedReferenceEntities.length])
+
+  // Fetch real cost from API when model/duration changes
+  useEffect(() => {
+    if (!modelSlug) {
+      setEstimatedCost(null)
+      return
+    }
+
+    const fetchCost = async () => {
+      setCostLoading(true)
+      try {
+        const res = await fetch('/api/estimate-cost', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: modelSlug,
+            duration: mediaType === 'video' ? durationSeconds : undefined,
+          }),
+        })
+        const data = await res.json()
+        if (data.costCents !== undefined) {
+          setEstimatedCost(data.costCents)
+        }
+      } catch (error) {
+        console.error('Failed to fetch cost:', error)
+        // Fallback to rough estimate
+        setEstimatedCost(mediaType === 'video' ? 50 : 10)
+      } finally {
+        setCostLoading(false)
+      }
+    }
+
+    fetchCost()
+  }, [modelSlug, mediaType, durationSeconds])
+
   useEffect(() => {
     setMounted(true)
   }, [])
@@ -170,18 +257,17 @@ export function ShotEditModal({
       setMediaType(shot.mediaType || 'image')
       setModelSlug(shot.modelSlug || '')
       setPrompt(shot.prompt || shot.aiSuggestedPrompt || '')
+      setSelectedReferenceShots([]) // Reset reference selection
+      setSelectedReferenceEntities([]) // Reset entity selection
     }
   }, [shot])
 
-  // Set default model when media type changes (if no model selected)
+  // Clear model selection when media type changes if current model is incompatible
+  // User must explicitly select a model - no defaults
   useEffect(() => {
-    if (!modelSlug || !availableModels.find(m => m.id === modelSlug)) {
-      // Set default: seedream-4.5 for images, veo-3.1 for video
-      const defaultModel = mediaType === 'video' ? 'veo-3.1' : 'seedream-4.5'
-      const model = availableModels.find(m => m.id === defaultModel) || availableModels[0]
-      if (model) {
-        setModelSlug(model.id)
-      }
+    if (modelSlug && !availableModels.find(m => m.id === modelSlug)) {
+      // Current model is not compatible with new media type - clear it
+      setModelSlug('')
     }
   }, [mediaType, availableModels])
 
@@ -229,7 +315,27 @@ export function ShotEditModal({
     if (!shot) return
     // Save first, then generate
     await handleSave()
-    await onGenerate(shot.id)
+
+    // Collect reference URLs from selected shots
+    const shotReferenceUrls = selectedReferenceShots
+      .map(shotId => shots.find(s => s.id === shotId)?.generatedImageUrl)
+      .filter((url): url is string => !!url)
+
+    // Collect reference URLs from selected entities
+    const entityReferenceUrls = selectedReferenceEntities
+      .map(entityId => entities.find(e => e.id === entityId)?.primaryImageUrl)
+      .filter((url): url is string => !!url)
+
+    // Combine all references
+    const referenceImages = [...shotReferenceUrls, ...entityReferenceUrls]
+
+    console.log('[ShotEditModal] Reference images to pass:', {
+      shotRefs: shotReferenceUrls,
+      entityRefs: entityReferenceUrls,
+      combined: referenceImages,
+    })
+
+    await onGenerate(shot.id, referenceImages.length > 0 ? { referenceImages } : undefined)
   }
 
   if (!mounted) return null
@@ -397,14 +503,20 @@ export function ShotEditModal({
               <div>
                 <label className="block text-sm font-medium text-zinc-400 mb-2">
                   <Sparkles size={14} className="inline mr-1" />
-                  Generation Model
+                  Generation Model *
                 </label>
                 <div className="relative">
                   <select
                     value={modelSlug}
                     onChange={(e) => setModelSlug(e.target.value)}
-                    className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-skinny-yellow/50 appearance-none cursor-pointer"
+                    className={cn(
+                      "w-full bg-zinc-800 border rounded-lg px-4 py-3 focus:outline-none appearance-none cursor-pointer",
+                      modelSlug
+                        ? "border-zinc-700 text-white focus:border-skinny-yellow/50"
+                        : "border-orange-500/50 text-zinc-400"
+                    )}
                   >
+                    <option value="">Select a model...</option>
                     {availableModels.map(model => (
                       <option key={model.id} value={model.id}>
                         {model.name}
@@ -417,7 +529,162 @@ export function ShotEditModal({
                 {selectedModel && (
                   <ModelCapabilities model={selectedModel} />
                 )}
+                {/* Cost estimation */}
+                {selectedModel && (
+                  <div className="flex items-center justify-between mt-3 pt-3 border-t border-zinc-800">
+                    <span className="text-sm text-zinc-400">Estimated cost:</span>
+                    {costLoading ? (
+                      <span className="flex items-center gap-2 text-sm text-zinc-500">
+                        <Loader2 size={12} className="animate-spin" />
+                        Loading...
+                      </span>
+                    ) : estimatedCost !== null ? (
+                      <span className="text-sm font-medium text-skinny-yellow">
+                        ~{estimatedCost}¢
+                      </span>
+                    ) : (
+                      <span className="text-sm text-zinc-500">--</span>
+                    )}
+                  </div>
+                )}
+                {/* No model selected warning */}
+                {!modelSlug && (
+                  <p className="text-xs text-orange-400 mt-2">
+                    Please select a model to generate this shot
+                  </p>
+                )}
               </div>
+
+              {/* Reference Images from Previous Shots */}
+              {selectedModel?.capabilities.supportsReferenceImages && completedShots.length > 0 && (
+                <div>
+                  <label className="block text-sm font-medium text-zinc-400 mb-2">
+                    <ImagePlus size={14} className="inline mr-1" />
+                    Reference from Previous Shots
+                  </label>
+                  <p className="text-xs text-zinc-500 mb-3">
+                    Select completed shots to use as style/consistency references
+                  </p>
+                  <div className="grid grid-cols-4 gap-2 max-h-40 overflow-y-auto">
+                    {completedShots.map(refShot => {
+                      const isSelected = selectedReferenceShots.includes(refShot.id)
+                      const maxRefs = selectedModel?.maxReferenceImages || 4
+                      const atCapacity = selectedReferenceShots.length >= maxRefs && !isSelected
+
+                      return (
+                        <button
+                          key={refShot.id}
+                          onClick={() => toggleReferenceShot(refShot.id)}
+                          disabled={atCapacity}
+                          className={cn(
+                            "relative aspect-video rounded-lg overflow-hidden border-2 transition-all",
+                            isSelected
+                              ? "border-skinny-yellow ring-2 ring-skinny-yellow/30"
+                              : atCapacity
+                              ? "border-zinc-800 opacity-50 cursor-not-allowed"
+                              : "border-zinc-700 hover:border-zinc-600"
+                          )}
+                        >
+                          <img
+                            src={refShot.generatedImageUrl}
+                            alt={refShot.title || `Shot ${refShot.shotNumber}`}
+                            className="w-full h-full object-cover"
+                          />
+                          {/* Shot number badge */}
+                          <div className="absolute top-1 left-1 px-1 py-0.5 rounded bg-black/60 text-[10px] font-medium text-white">
+                            {refShot.shotNumber}
+                          </div>
+                          {/* Selected checkmark */}
+                          {isSelected && (
+                            <div className="absolute inset-0 bg-skinny-yellow/20 flex items-center justify-center">
+                              <div className="w-6 h-6 rounded-full bg-skinny-yellow flex items-center justify-center">
+                                <Check size={14} className="text-black" />
+                              </div>
+                            </div>
+                          )}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <p className="text-xs text-zinc-500 mt-2">
+                    {selectedReferenceShots.length + selectedReferenceEntities.length} / {selectedModel?.maxReferenceImages || 4} references selected
+                  </p>
+                </div>
+              )}
+
+              {/* No completed shots message */}
+              {selectedModel?.capabilities.supportsReferenceImages && completedShots.length === 0 && entitiesWithImages.length === 0 && (
+                <div className="flex items-center gap-3 p-3 rounded-lg bg-zinc-800/50 border border-zinc-700/50">
+                  <ImageOff size={16} className="text-zinc-500" />
+                  <p className="text-xs text-zinc-500">
+                    Generate some shots or add entities with images to use as references
+                  </p>
+                </div>
+              )}
+
+              {/* Reference from Entities */}
+              {selectedModel?.capabilities.supportsReferenceImages && entitiesWithImages.length > 0 && (
+                <div>
+                  <label className="block text-sm font-medium text-zinc-400 mb-2">
+                    <Layers size={14} className="inline mr-1" />
+                    Reference from Entities
+                  </label>
+                  <p className="text-xs text-zinc-500 mb-3">
+                    Select characters, worlds, objects, or styles as visual references
+                  </p>
+                  <div className="grid grid-cols-4 gap-2 max-h-40 overflow-y-auto">
+                    {entitiesWithImages.map(entity => {
+                      const isSelected = selectedReferenceEntities.includes(entity.id)
+                      const maxRefs = selectedModel?.maxReferenceImages || 4
+                      const totalSelected = selectedReferenceShots.length + selectedReferenceEntities.length
+                      const atCapacity = totalSelected >= maxRefs && !isSelected
+
+                      return (
+                        <button
+                          key={entity.id}
+                          onClick={() => toggleReferenceEntity(entity.id)}
+                          disabled={atCapacity}
+                          className={cn(
+                            "relative aspect-square rounded-lg overflow-hidden border-2 transition-all",
+                            isSelected
+                              ? "border-skinny-yellow ring-2 ring-skinny-yellow/30"
+                              : atCapacity
+                              ? "border-zinc-800 opacity-50 cursor-not-allowed"
+                              : "border-zinc-700 hover:border-zinc-600"
+                          )}
+                        >
+                          <img
+                            src={entity.primaryImageUrl}
+                            alt={entity.entityName}
+                            className="w-full h-full object-cover"
+                          />
+                          {/* Entity type badge */}
+                          <div className="absolute top-1 left-1">
+                            <EntityTypeBadge type={entity.entityType} size="sm" />
+                          </div>
+                          {/* Entity name */}
+                          <div className="absolute bottom-0 left-0 right-0 px-1 py-0.5 bg-black/70 text-[9px] text-white truncate">
+                            {entity.entityName}
+                          </div>
+                          {/* Selected checkmark */}
+                          {isSelected && (
+                            <div className="absolute inset-0 bg-skinny-yellow/20 flex items-center justify-center">
+                              <div className="w-6 h-6 rounded-full bg-skinny-yellow flex items-center justify-center">
+                                <Check size={14} className="text-black" />
+                              </div>
+                            </div>
+                          )}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  {completedShots.length === 0 && (
+                    <p className="text-xs text-zinc-500 mt-2">
+                      {selectedReferenceShots.length + selectedReferenceEntities.length} / {selectedModel?.maxReferenceImages || 4} references selected
+                    </p>
+                  )}
+                </div>
+              )}
 
               {/* Duration (Video only) */}
               {mediaType === 'video' && durationOptions.length > 0 && (
@@ -519,11 +786,16 @@ export function ShotEditModal({
                 </button>
                 <button
                   onClick={handleGenerate}
-                  disabled={isSaving || !description.trim()}
-                  className="flex items-center gap-2 px-4 py-2 bg-skinny-yellow text-black rounded-lg hover:bg-skinny-green transition-colors disabled:opacity-50"
+                  disabled={isSaving || !description.trim() || !modelSlug}
+                  className={cn(
+                    "flex items-center gap-2 px-4 py-2 rounded-lg transition-colors",
+                    !modelSlug
+                      ? "bg-zinc-700 text-zinc-500 cursor-not-allowed"
+                      : "bg-skinny-yellow text-black hover:bg-skinny-green disabled:opacity-50"
+                  )}
                 >
                   <Sparkles size={16} />
-                  Generate
+                  {!modelSlug ? 'Select Model First' : 'Generate'}
                 </button>
               </div>
             </div>

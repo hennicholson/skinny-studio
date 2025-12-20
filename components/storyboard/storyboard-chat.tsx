@@ -183,7 +183,7 @@ Focus on helping the user plan their visual story with consistent characters and
             // Inject storyboard context as a system-like message
             { role: 'user', content: storyboardSystemContext + '\n\n---\n\n' + userMessage.content },
           ],
-          modelId: 'gemini-2.5-flash',
+          modelId: 'gemini-2.5-flash', // Always use default orchestrator model
           selectedGenerationModelId: 'creative-consultant', // Disable generation in storyboard chat
         }),
       })

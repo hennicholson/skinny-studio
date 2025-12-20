@@ -7,6 +7,7 @@ import { Plus, Search, User, Globe, Box, Palette, Trash2, Eye, Sparkles, MoreVer
 import { StoryboardEntity, EntityType } from '@/lib/types'
 import { EntityTypeBadge, getEntityTypeColor, getEntityTypeBgColor, getEntityTypeIcon, getEntityTypeLabel } from './entity-type-badge'
 import { EntityPanelSkeleton } from './storyboard-skeleton'
+import { glassClasses } from '@/lib/liquid-glass-styles'
 
 interface EntityPanelProps {
   entities: StoryboardEntity[]
@@ -54,10 +55,10 @@ function EntityCard({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -10 }}
       className={cn(
-        "group relative rounded-lg border transition-all overflow-hidden",
+        "group relative rounded-xl border backdrop-blur-sm transition-all duration-300 overflow-hidden",
         isSelected
-          ? "border-skinny-yellow/30 bg-zinc-800/70"
-          : "border-zinc-700/50 bg-zinc-800/30 hover:border-zinc-600"
+          ? "border-skinny-yellow/30 bg-skinny-yellow/5 shadow-lg shadow-skinny-yellow/10"
+          : "border-white/5 bg-white/[0.02] hover:border-white/15 hover:bg-white/[0.04]"
       )}
     >
       <div
@@ -65,7 +66,7 @@ function EntityCard({
         onClick={onSelect}
       >
         {/* Entity Image */}
-        <div className={cn("relative w-12 h-12 rounded-md overflow-hidden flex-shrink-0", bgColor)}>
+        <div className={cn("relative w-16 h-16 rounded-lg overflow-hidden flex-shrink-0", bgColor)}>
           {entity.primaryImageUrl ? (
             <img
               src={entity.primaryImageUrl}
@@ -74,7 +75,7 @@ function EntityCard({
             />
           ) : (
             <div className="w-full h-full flex items-center justify-center">
-              <Icon size={20} className={color} />
+              <Icon size={24} className={color} />
             </div>
           )}
 
@@ -232,17 +233,21 @@ export function EntityPanel({
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex-shrink-0 p-3 border-b border-zinc-800">
+      {/* Header - simplified since parent shows title */}
+      <div className="flex-shrink-0 px-3 pt-1 pb-3">
         <div className="flex items-center justify-between mb-2">
-          <h3 className="text-sm font-medium text-white">Entities</h3>
           <button
             onClick={onAddEntity}
             disabled={isLoading}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-skinny-yellow/10 text-skinny-yellow hover:bg-skinny-yellow/20 transition-colors text-xs font-medium disabled:opacity-50"
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-all duration-300",
+              "bg-gradient-to-br from-skinny-yellow/90 to-skinny-yellow/70 text-black",
+              "shadow-md shadow-skinny-yellow/20 hover:shadow-skinny-yellow/40",
+              "hover:scale-105 active:scale-95 disabled:opacity-50"
+            )}
           >
             <Plus size={12} />
-            Add
+            Add Entity
           </button>
         </div>
 
@@ -255,7 +260,11 @@ export function EntityPanel({
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search entities..."
-              className="w-full bg-zinc-800/50 border border-zinc-700/50 rounded-lg pl-8 pr-3 py-1.5 text-xs focus:outline-none focus:border-zinc-600 transition-colors"
+              className={cn(
+                "w-full pl-8 pr-3 py-1.5 text-xs rounded-xl transition-all duration-300",
+                "bg-white/[0.03] border border-white/10 text-white placeholder-zinc-500",
+                "focus:outline-none focus:border-skinny-yellow/30 focus:bg-white/[0.05]"
+              )}
             />
           </div>
         )}
@@ -370,7 +379,7 @@ export function EntityPanel({
 
       {/* Summary Footer */}
       {entities.length > 0 && (
-        <div className="flex-shrink-0 p-2 border-t border-zinc-800 flex items-center justify-between text-[10px] text-zinc-600">
+        <div className="flex-shrink-0 p-2 border-t border-white/5 flex items-center justify-between text-[10px] text-zinc-500">
           <div className="flex items-center gap-3">
             {ENTITY_TYPE_ORDER.map(type => {
               const count = entities.filter(e => e.entityType === type).length
@@ -384,8 +393,9 @@ export function EntityPanel({
               )
             })}
           </div>
-          <span className="text-zinc-700">
-            {entities.filter(e => e.visionContext).length}/{entities.length} analyzed
+          <span className="flex items-center gap-1">
+            <Sparkles size={10} className="text-green-400" />
+            {entities.filter(e => e.visionContext).length}/{entities.length}
           </span>
         </div>
       )}

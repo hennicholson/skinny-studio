@@ -513,6 +513,8 @@ export async function POST(request: Request) {
 
               // Iterate through ALL messages (most recent first) to find images
               // This ensures we capture images from earlier in the conversation
+              // For 'reference' purpose: allow multiple images (FLUX 2 Pro supports 8, Seedream supports 14)
+              // For other purposes (starting_frame, last_frame, edit_target): only keep the most recent one
               for (let i = messages.length - 1; i >= 0; i--) {
                 const msg = messages[i]
                 if (msg.role === 'user' && msg.attachments?.length) {
@@ -520,18 +522,32 @@ export async function POST(request: Request) {
                     att => (att.type === 'image' || att.type === 'reference') && (att.base64 || att.url)
                   )
                   for (const att of imageAttachments) {
-                    // Only add if we don't already have an image with this purpose
-                    // (prefer more recent images for each purpose)
-                    const existingWithPurpose = imagesWithPurposes.find(
-                      img => img.purpose === (att.purpose || 'reference')
-                    )
-                    if (!existingWithPurpose) {
-                      imagesWithPurposes.push({
-                        url: att.url,
-                        base64: att.base64,
-                        mimeType: att.mimeType,
-                        purpose: att.purpose || 'reference',
-                      })
+                    const purpose = att.purpose || 'reference'
+
+                    // For 'reference' purpose, allow multiple images (models support multiple refs)
+                    // For other purposes, only keep the most recent one
+                    if (purpose === 'reference') {
+                      // Check if we already have this exact URL to avoid duplicates
+                      const alreadyHasUrl = imagesWithPurposes.some(img => img.url === att.url)
+                      if (!alreadyHasUrl) {
+                        imagesWithPurposes.push({
+                          url: att.url,
+                          base64: att.base64,
+                          mimeType: att.mimeType,
+                          purpose: purpose,
+                        })
+                      }
+                    } else {
+                      // For starting_frame, last_frame, edit_target - only keep most recent
+                      const existingWithPurpose = imagesWithPurposes.find(img => img.purpose === purpose)
+                      if (!existingWithPurpose) {
+                        imagesWithPurposes.push({
+                          url: att.url,
+                          base64: att.base64,
+                          mimeType: att.mimeType,
+                          purpose: purpose,
+                        })
+                      }
                     }
                   }
                 }

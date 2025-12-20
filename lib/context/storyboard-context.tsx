@@ -1,6 +1,7 @@
 'use client'
 
 import { createContext, useContext, useReducer, useCallback, ReactNode, useEffect } from 'react'
+import { toast } from 'sonner'
 import type {
   Storyboard,
   StoryboardShot,
@@ -241,7 +242,7 @@ interface StoryboardContextValue {
   getEntitiesForShot: (shotId: string) => StoryboardEntity[]
 
   // Generation
-  generateShot: (shotId: string) => Promise<boolean>
+  generateShot: (shotId: string, options?: { referenceImages?: string[] }) => Promise<boolean>
 }
 
 const StoryboardContext = createContext<StoryboardContextValue | null>(null)
@@ -675,8 +676,24 @@ export function StoryboardProvider({ children }: { children: ReactNode }) {
   // GENERATION
   // ==========================================
 
-  const generateShot = useCallback(async (shotId: string): Promise<boolean> => {
+  const generateShot = useCallback(async (
+    shotId: string,
+    options?: { referenceImages?: string[] }
+  ): Promise<boolean> => {
     if (!state.currentStoryboard) return false
+
+    // Get the shot to find its model slug
+    const shot = state.shots.find(s => s.id === shotId)
+    if (!shot) {
+      toast.error('Shot not found')
+      return false
+    }
+
+    // Require model selection
+    if (!shot.modelSlug) {
+      toast.error('Please select a model for this shot before generating')
+      return false
+    }
 
     dispatch({ type: 'SET_GENERATING', payload: shotId })
     dispatch({ type: 'UPDATE_SHOT', payload: { id: shotId, updates: { status: 'generating' } } })
@@ -685,11 +702,37 @@ export function StoryboardProvider({ children }: { children: ReactNode }) {
       const res = await fetch(`/api/storyboards/${state.currentStoryboard.id}/generate/${shotId}`, {
         method: 'POST',
         headers: getAuthHeaders(),
+        body: JSON.stringify({
+          modelSlug: shot.modelSlug,
+          customPrompt: shot.prompt,
+          referenceImages: options?.referenceImages, // User-selected shot references
+        }),
       })
 
       const result = await res.json()
 
       if (!res.ok || result.error) {
+        // Handle insufficient balance specifically
+        if (res.status === 402 || result.code === 'INSUFFICIENT_BALANCE') {
+          const needed = result.required || 0
+          const have = result.available || 0
+          const modelName = result.modelName || 'this model'
+
+          // Update shot status back to pending (not error)
+          dispatch({
+            type: 'UPDATE_SHOT',
+            payload: { id: shotId, updates: { status: 'pending' } }
+          })
+          dispatch({ type: 'SET_GENERATING', payload: null })
+
+          // Show specific error with details
+          toast.error(
+            `Insufficient balance for ${modelName}. Need ${needed}¢, have ${have}¢. Please top up your credits.`,
+            { duration: 5000 }
+          )
+          return false
+        }
+
         throw new Error(result.error || 'Generation failed')
       }
 
@@ -711,41 +754,64 @@ export function StoryboardProvider({ children }: { children: ReactNode }) {
 
         // Start polling for completion
         const pollForCompletion = async (): Promise<boolean> => {
-          const maxAttempts = 120 // 2 minutes at 1s intervals
+          const maxAttempts = 180 // 3 minutes at 1s intervals for video
           let attempts = 0
+          let lastError: string | null = null
+
+          // Show loading toast
+          const toastId = toast.loading('Generating shot...', {
+            description: 'This may take a minute for video content'
+          })
 
           while (attempts < maxAttempts) {
             await new Promise(resolve => setTimeout(resolve, 1000))
             attempts++
 
-            const pollRes = await fetch(
-              `/api/storyboards/${state.currentStoryboard!.id}/generate/${shotId}`,
-              { headers: getAuthHeaders() }
-            )
-            const pollResult = await pollRes.json()
+            try {
+              const pollRes = await fetch(
+                `/api/storyboards/${state.currentStoryboard!.id}/generate/${shotId}`,
+                { headers: getAuthHeaders() }
+              )
+              const pollResult = await pollRes.json()
 
-            if (pollResult.status === 'completed') {
-              dispatch({
-                type: 'UPDATE_SHOT',
-                payload: {
-                  id: shotId,
-                  updates: {
-                    status: 'completed',
-                    generatedImageUrl: pollResult.imageUrl,
-                    generationId: pollResult.generationId,
+              if (pollResult.status === 'completed') {
+                dispatch({
+                  type: 'UPDATE_SHOT',
+                  payload: {
+                    id: shotId,
+                    updates: {
+                      status: 'completed',
+                      generatedImageUrl: pollResult.imageUrl,
+                      generationId: pollResult.generationId,
+                    },
                   },
-                },
-              })
-              dispatch({ type: 'SET_GENERATING', payload: null })
-              return true
-            }
+                })
+                dispatch({ type: 'SET_GENERATING', payload: null })
 
-            if (pollResult.status === 'error') {
-              throw new Error(pollResult.error || 'Generation failed')
+                toast.success('Shot generated successfully!', { id: toastId })
+                return true
+              }
+
+              if (pollResult.status === 'error') {
+                lastError = pollResult.error || 'Generation failed'
+                throw new Error(lastError || 'Generation failed')
+              }
+
+              // Update loading toast with progress
+              if (attempts % 10 === 0) {
+                toast.loading(`Still generating... (${Math.floor(attempts / 60)}m ${attempts % 60}s)`, {
+                  id: toastId,
+                  description: 'AI is creating your content'
+                })
+              }
+            } catch (pollError) {
+              // Network error during poll - retry silently
+              console.warn('Polling error, retrying...', pollError)
             }
           }
 
-          throw new Error('Generation timed out')
+          toast.error('Generation timed out', { id: toastId })
+          throw new Error(lastError || 'Generation timed out')
         }
 
         return await pollForCompletion()
@@ -765,6 +831,7 @@ export function StoryboardProvider({ children }: { children: ReactNode }) {
           },
         })
         dispatch({ type: 'SET_GENERATING', payload: null })
+        toast.success('Shot generated successfully!')
         return true
       }
 
@@ -773,6 +840,7 @@ export function StoryboardProvider({ children }: { children: ReactNode }) {
       console.error('Error generating shot:', error)
       dispatch({ type: 'UPDATE_SHOT', payload: { id: shotId, updates: { status: 'error' } } })
       dispatch({ type: 'SET_GENERATING', payload: null })
+      toast.error(error instanceof Error ? error.message : 'Generation failed')
       return false
     }
   }, [state.currentStoryboard, getAuthHeaders])

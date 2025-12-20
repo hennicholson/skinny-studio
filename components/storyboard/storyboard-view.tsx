@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Film, Plus, List, Clock, User, Globe, Box, Palette, ChevronRight, Settings, ChevronDown, MessageSquare, Layers, LayoutList } from 'lucide-react'
+import { Film, Plus, List, Clock, User, Globe, Box, Palette, ChevronRight, Settings, ChevronDown, MessageSquare, Layers, LayoutList, PanelLeftClose, PanelRightClose, PanelLeft, PanelRight, Play } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useStoryboard } from '@/lib/context/storyboard-context'
 import { useApp } from '@/lib/context/app-context'
@@ -14,10 +14,13 @@ import { EntityPanel } from './entity-panel'
 import { EntityPickerModal } from './entity-picker-modal'
 import { StoryboardChat } from './storyboard-chat'
 import { ShotEditModal } from './shot-edit-modal'
+import { EntityDetailModal } from './entity-detail-modal'
+import { ShotSlideshowModal } from './shot-slideshow-modal'
 import { StoryboardShot, StoryboardEntity, EntityType, UpdateShotInput } from '@/lib/types'
 import { Folder as LibraryFolder } from '@/lib/context/folder-context'
 import { Generation as ContextGeneration } from '@/lib/context/generation-context'
 import { toast } from 'sonner'
+import { glassClasses } from '@/lib/liquid-glass-styles'
 
 // Mobile tab types
 type MobileTab = 'shots' | 'entities' | 'timeline'
@@ -41,7 +44,7 @@ function MobileTabBar({
   ]
 
   return (
-    <div className="flex-shrink-0 flex border-b border-zinc-800 bg-zinc-950/80 backdrop-blur-sm md:hidden">
+    <div className="flex-shrink-0 flex border-b border-white/5 bg-zinc-900/80 backdrop-blur-xl md:hidden">
       {tabs.map(tab => (
         <button
           key={tab.id}
@@ -298,7 +301,11 @@ function StoryboardWelcome({ onCreate }: { onCreate: () => void }) {
           ].map(({ icon: Icon, label, desc }) => (
             <div
               key={label}
-              className="flex items-start gap-3 p-3 rounded-lg bg-white/[0.02] border border-white/[0.05]"
+              className={cn(
+                "flex items-start gap-3 p-3 rounded-xl transition-all duration-300",
+                "bg-white/[0.02] backdrop-blur-md border border-white/[0.08]",
+                "hover:bg-white/[0.05] hover:border-white/[0.15] hover:scale-[1.02]"
+              )}
             >
               <Icon size={16} className="text-skinny-yellow mt-0.5" />
               <div>
@@ -311,7 +318,12 @@ function StoryboardWelcome({ onCreate }: { onCreate: () => void }) {
 
         <button
           onClick={onCreate}
-          className="flex items-center gap-2 px-6 py-3 rounded-xl bg-skinny-yellow text-black font-medium hover:bg-skinny-green transition-colors"
+          className={cn(
+            "flex items-center gap-2 px-6 py-3 rounded-xl font-medium transition-all duration-300",
+            "bg-gradient-to-br from-skinny-yellow to-skinny-yellow/80 text-black",
+            "shadow-lg shadow-skinny-yellow/30 hover:shadow-skinny-yellow/50",
+            "hover:scale-105 active:scale-95"
+          )}
         >
           <Plus size={18} />
           Create Your First Storyboard
@@ -349,7 +361,13 @@ export function StoryboardView() {
   const [showEntityPicker, setShowEntityPicker] = useState(false)
   const [showShotEditModal, setShowShotEditModal] = useState(false)
   const [editingShot, setEditingShot] = useState<StoryboardShot | null>(null)
+  const [showEntityDetailModal, setShowEntityDetailModal] = useState(false)
+  const [editingEntity, setEditingEntity] = useState<StoryboardEntity | null>(null)
+  const [entityModalMode, setEntityModalMode] = useState<'view' | 'edit'>('view')
   const [mobileTab, setMobileTab] = useState<MobileTab>('shots')
+  const [leftPanelOpen, setLeftPanelOpen] = useState(true)
+  const [rightPanelOpen, setRightPanelOpen] = useState(true)
+  const [showSlideshow, setShowSlideshow] = useState(false)
 
   // Load storyboards on mount
   useEffect(() => {
@@ -418,6 +436,19 @@ export function StoryboardView() {
     }
   }, [generateShot])
 
+  const handleGenerateShotWithOptions = useCallback(async (
+    shotId: string,
+    options?: { referenceImages?: string[] }
+  ) => {
+    toast.loading('Generating shot...', { id: `gen-${shotId}` })
+    try {
+      await generateShot(shotId, options)
+      toast.success('Shot generated!', { id: `gen-${shotId}` })
+    } catch (error) {
+      toast.error('Failed to generate shot', { id: `gen-${shotId}` })
+    }
+  }, [generateShot])
+
   // Entity handlers
   const handleAddEntity = useCallback(() => {
     setShowEntityPicker(true)
@@ -425,7 +456,9 @@ export function StoryboardView() {
 
   const handleEditEntity = useCallback((entity: StoryboardEntity) => {
     setSelectedEntityId(entity.id)
-    // TODO: Open entity edit modal
+    setEditingEntity(entity)
+    setEntityModalMode('edit')
+    setShowEntityDetailModal(true)
   }, [])
 
   const handleDeleteEntity = useCallback(async (entityId: string) => {
@@ -447,7 +480,9 @@ export function StoryboardView() {
 
   const handleViewEntity = useCallback((entity: StoryboardEntity) => {
     setSelectedEntityId(entity.id)
-    // TODO: Open entity view modal
+    setEditingEntity(entity)
+    setEntityModalMode('view')
+    setShowEntityDetailModal(true)
   }, [])
 
   // Entity picker handlers
@@ -555,7 +590,10 @@ export function StoryboardView() {
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-black relative">
       {/* Header */}
-      <div className="flex-shrink-0 px-4 py-3 border-b border-zinc-800 flex items-center justify-between bg-zinc-950/50 backdrop-blur-sm z-10">
+      <div className={cn(
+        "flex-shrink-0 px-4 py-3 border-b border-white/5 flex items-center justify-between z-10",
+        glassClasses.panel
+      )}>
         <div className="flex items-center gap-3">
           <StoryboardSelector
             storyboards={storyboards}
@@ -585,6 +623,17 @@ export function StoryboardView() {
             <ChevronDown size={14} className="text-zinc-500" />
           </button>
 
+          {/* Slideshow Preview Button */}
+          {shots.filter(s => s.status === 'completed' && s.generatedImageUrl).length > 0 && (
+            <button
+              onClick={() => setShowSlideshow(true)}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg bg-skinny-yellow/10 border border-skinny-yellow/20 text-skinny-yellow hover:bg-skinny-yellow/20 transition-colors"
+            >
+              <Play size={14} />
+              <span className="text-sm font-medium">Preview</span>
+            </button>
+          )}
+
           <button className="p-2 rounded-lg text-zinc-500 hover:text-white hover:bg-zinc-800 transition-colors">
             <Settings size={16} />
           </button>
@@ -606,43 +655,129 @@ export function StoryboardView() {
             entityCount={entities.length}
           />
 
-          {/* Desktop Layout - 3 column split */}
-          <div className="flex-1 hidden md:flex overflow-hidden">
-            {/* Shot List Panel */}
-            <div className="w-80 border-r border-zinc-800 flex flex-col">
-              <ShotListPanel
-                shots={shots}
-                entities={entities}
-                onAddShot={handleAddShot}
-                onEditShot={handleEditShot}
-                onDeleteShot={handleDeleteShot}
-                onReorderShots={handleReorderShots}
-                onGenerateShot={handleGenerateShot}
-                selectedShotId={selectedShotId}
-                onSelectShot={setSelectedShotId}
-                isLoading={isLoading}
-              />
-            </div>
+          {/* Desktop Layout - 3 column split with collapsible panels */}
+          <div className="flex-1 hidden md:flex overflow-hidden relative">
+            {/* Left Panel - Shot List (Collapsible) */}
+            <motion.div
+              initial={false}
+              animate={{
+                width: leftPanelOpen ? 288 : 48,
+              }}
+              transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+              className={cn(
+                "flex-shrink-0 flex flex-col border-r border-white/5",
+                glassClasses.panel
+              )}
+            >
+              {leftPanelOpen ? (
+                <>
+                  {/* Panel Header with Toggle */}
+                  <div className="flex items-center justify-between px-3 py-2 border-b border-white/5">
+                    <span className="text-xs font-medium text-zinc-400">Shots</span>
+                    <button
+                      onClick={() => setLeftPanelOpen(false)}
+                      className="p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-white/5 transition-colors"
+                      title="Collapse panel"
+                    >
+                      <PanelLeftClose size={14} />
+                    </button>
+                  </div>
+                  <div className="flex-1 overflow-hidden">
+                    <ShotListPanel
+                      shots={shots}
+                      entities={entities}
+                      onAddShot={handleAddShot}
+                      onEditShot={handleEditShot}
+                      onDeleteShot={handleDeleteShot}
+                      onReorderShots={handleReorderShots}
+                      onGenerateShot={handleGenerateShot}
+                      selectedShotId={selectedShotId}
+                      onSelectShot={setSelectedShotId}
+                      isLoading={isLoading}
+                    />
+                  </div>
+                </>
+              ) : (
+                <div className="flex flex-col items-center py-3 gap-3">
+                  <button
+                    onClick={() => setLeftPanelOpen(true)}
+                    className="p-2 rounded-lg text-zinc-500 hover:text-skinny-yellow hover:bg-skinny-yellow/10 transition-colors"
+                    title="Expand shots panel"
+                  >
+                    <PanelLeft size={16} />
+                  </button>
+                  <div className="flex flex-col items-center gap-1 text-xs text-zinc-500">
+                    <LayoutList size={14} />
+                    <span className="[writing-mode:vertical-lr] rotate-180 text-[10px]">
+                      {shots.length} shots
+                    </span>
+                  </div>
+                </div>
+              )}
+            </motion.div>
 
-            {/* Chat Panel */}
-            <div className="flex-1 flex flex-col">
+            {/* Chat Panel - Flexible center */}
+            <div className="flex-1 flex flex-col min-w-0 bg-black/40">
               <StoryboardChat />
             </div>
 
-            {/* Entity Panel */}
-            <div className="w-72 border-l border-zinc-800 flex flex-col">
-              <EntityPanel
-                entities={entities}
-                onAddEntity={handleAddEntity}
-                onEditEntity={handleEditEntity}
-                onDeleteEntity={handleDeleteEntity}
-                onAnalyzeEntity={handleAnalyzeEntity}
-                onViewEntity={handleViewEntity}
-                selectedEntityId={selectedEntityId}
-                onSelectEntity={setSelectedEntityId}
-                isLoading={isLoading}
-              />
-            </div>
+            {/* Right Panel - Entities (Collapsible) */}
+            <motion.div
+              initial={false}
+              animate={{
+                width: rightPanelOpen ? 256 : 48,
+              }}
+              transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+              className={cn(
+                "flex-shrink-0 flex flex-col border-l border-white/5",
+                glassClasses.panel
+              )}
+            >
+              {rightPanelOpen ? (
+                <>
+                  {/* Panel Header with Toggle */}
+                  <div className="flex items-center justify-between px-3 py-2 border-b border-white/5">
+                    <span className="text-xs font-medium text-zinc-400">Entities</span>
+                    <button
+                      onClick={() => setRightPanelOpen(false)}
+                      className="p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-white/5 transition-colors"
+                      title="Collapse panel"
+                    >
+                      <PanelRightClose size={14} />
+                    </button>
+                  </div>
+                  <div className="flex-1 overflow-hidden">
+                    <EntityPanel
+                      entities={entities}
+                      onAddEntity={handleAddEntity}
+                      onEditEntity={handleEditEntity}
+                      onDeleteEntity={handleDeleteEntity}
+                      onAnalyzeEntity={handleAnalyzeEntity}
+                      onViewEntity={handleViewEntity}
+                      selectedEntityId={selectedEntityId}
+                      onSelectEntity={setSelectedEntityId}
+                      isLoading={isLoading}
+                    />
+                  </div>
+                </>
+              ) : (
+                <div className="flex flex-col items-center py-3 gap-3">
+                  <button
+                    onClick={() => setRightPanelOpen(true)}
+                    className="p-2 rounded-lg text-zinc-500 hover:text-skinny-yellow hover:bg-skinny-yellow/10 transition-colors"
+                    title="Expand entities panel"
+                  >
+                    <PanelRight size={16} />
+                  </button>
+                  <div className="flex flex-col items-center gap-1 text-xs text-zinc-500">
+                    <Layers size={14} />
+                    <span className="[writing-mode:vertical-lr] rotate-180 text-[10px]">
+                      {entities.length} entities
+                    </span>
+                  </div>
+                </div>
+              )}
+            </motion.div>
           </div>
 
           {/* Mobile Layout - Tabbed content */}
@@ -833,10 +968,52 @@ export function StoryboardView() {
           setEditingShot(null)
         }}
         shot={editingShot}
+        shots={shots}
         entities={entities}
         onSave={handleSaveShot}
         onDelete={handleDeleteShot}
-        onGenerate={handleGenerateShot}
+        onGenerate={handleGenerateShotWithOptions}
+      />
+
+      {/* Entity Detail Modal */}
+      <EntityDetailModal
+        entity={editingEntity}
+        isOpen={showEntityDetailModal}
+        onClose={() => {
+          setShowEntityDetailModal(false)
+          setEditingEntity(null)
+        }}
+        onSave={async (updates) => {
+          if (!editingEntity) return false
+          const success = await updateEntity(editingEntity.id, updates)
+          if (success) {
+            // Update the editingEntity state with new values
+            setEditingEntity(prev => prev ? { ...prev, ...updates } : null)
+            toast.success('Entity updated')
+          }
+          return success
+        }}
+        onDelete={async (id) => {
+          const success = await removeEntity(id)
+          if (success) {
+            setShowEntityDetailModal(false)
+            setEditingEntity(null)
+            toast.success('Entity deleted')
+          }
+          return success
+        }}
+        onAnalyze={analyzeEntityImage}
+        mode={entityModalMode}
+      />
+
+      {/* Slideshow Preview Modal */}
+      <ShotSlideshowModal
+        isOpen={showSlideshow}
+        onClose={() => setShowSlideshow(false)}
+        shots={shots}
+        entities={entities}
+        initialShotId={selectedShotId}
+        onShotChange={setSelectedShotId}
       />
     </div>
   )

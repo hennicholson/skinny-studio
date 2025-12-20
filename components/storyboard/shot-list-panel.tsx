@@ -24,6 +24,7 @@ import { Plus, GripVertical, Image, Video, Check, Clock, AlertCircle, Sparkles, 
 import { StoryboardShot, StoryboardEntity, ShotEntityReference } from '@/lib/types'
 import { EntityTypeBadge } from './entity-type-badge'
 import { ShotListSkeleton } from './storyboard-skeleton'
+import { glassClasses } from '@/lib/liquid-glass-styles'
 
 interface ShotListPanelProps {
   shots: StoryboardShot[]
@@ -97,12 +98,18 @@ function ShotListItem({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -10 }}
       className={cn(
-        "group relative rounded-lg border transition-all",
+        "group relative rounded-xl border backdrop-blur-sm transition-all duration-300",
         isDragging
-          ? "bg-zinc-800 border-skinny-yellow/50 shadow-lg shadow-skinny-yellow/10 z-50"
+          ? "bg-skinny-yellow/10 border-skinny-yellow/50 shadow-xl shadow-skinny-yellow/20 z-50 scale-[1.02]"
           : isSelected
-          ? "bg-zinc-800/70 border-skinny-yellow/30"
-          : "bg-zinc-800/30 border-zinc-700/50 hover:border-zinc-600"
+          ? "bg-skinny-yellow/5 border-skinny-yellow/30 shadow-lg shadow-skinny-yellow/10"
+          : shot.status === 'completed'
+          ? "bg-green-500/5 border-green-500/20 hover:border-green-500/40 hover:bg-green-500/10"
+          : shot.status === 'generating'
+          ? "bg-skinny-yellow/5 border-skinny-yellow/20 animate-pulse"
+          : shot.status === 'error'
+          ? "bg-red-500/5 border-red-500/20 hover:border-red-500/40"
+          : "bg-white/[0.02] border-white/5 hover:border-white/15 hover:bg-white/[0.04]"
       )}
     >
       <div
@@ -205,11 +212,22 @@ function ShotListItem({
       </div>
 
       {/* Generated thumbnail preview */}
-      {shot.generationId && shot.status === 'completed' && (
-        <div className="absolute -right-1 -bottom-1 w-10 h-10 rounded-md overflow-hidden border border-zinc-700 shadow-lg">
-          <div className="w-full h-full bg-zinc-700 flex items-center justify-center">
-            <Check size={12} className="text-green-400" />
+      {shot.generatedImageUrl && shot.status === 'completed' && (
+        <div className="absolute -right-1 -bottom-1 w-16 h-16 rounded-lg overflow-hidden border-2 border-green-500/30 shadow-lg">
+          <img
+            src={shot.generatedImageUrl}
+            alt={shot.title || `Shot ${shot.shotNumber}`}
+            className="w-full h-full object-cover"
+          />
+          <div className="absolute bottom-0 right-0 p-1 bg-green-500/80 rounded-tl-md">
+            <Check size={10} className="text-white" />
           </div>
+        </div>
+      )}
+      {/* Generating indicator */}
+      {shot.status === 'generating' && (
+        <div className="absolute -right-1 -bottom-1 w-16 h-16 rounded-lg overflow-hidden border-2 border-yellow-500/30 shadow-lg bg-zinc-800 flex items-center justify-center">
+          <Loader2 size={20} className="text-skinny-yellow animate-spin" />
         </div>
       )}
     </motion.div>
@@ -256,30 +274,35 @@ export function ShotListPanel({
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex-shrink-0 p-3 border-b border-zinc-800">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium text-white">Shots</h3>
+      {/* Header - removed since parent now shows it */}
+      <div className="flex-shrink-0 px-3 pt-1 pb-3">
+        <div className="flex items-center justify-between mb-2">
           <button
             onClick={onAddShot}
             disabled={isLoading}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-skinny-yellow/10 text-skinny-yellow hover:bg-skinny-yellow/20 transition-colors text-xs font-medium disabled:opacity-50"
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-all duration-300",
+              "bg-gradient-to-br from-skinny-yellow/90 to-skinny-yellow/70 text-black",
+              "shadow-md shadow-skinny-yellow/20 hover:shadow-skinny-yellow/40",
+              "hover:scale-105 active:scale-95 disabled:opacity-50"
+            )}
           >
             <Plus size={12} />
-            Add
+            Add Shot
           </button>
         </div>
 
         {/* Summary */}
-        <div className="flex items-center gap-3 mt-2 text-xs text-zinc-500">
-          <span>{shots.length} total</span>
-          <span className="text-zinc-700">|</span>
-          <span className="text-green-400">
-            {shots.filter(s => s.status === 'completed').length} done
+        <div className="flex items-center gap-3 text-xs">
+          <span className="text-zinc-500">{shots.length} total</span>
+          <span className="w-px h-3 bg-zinc-800" />
+          <span className="flex items-center gap-1 text-green-400">
+            <Check size={10} />
+            {shots.filter(s => s.status === 'completed').length}
           </span>
-          <span className="text-zinc-700">|</span>
-          <span className="text-zinc-400">
-            {shots.filter(s => s.status === 'pending').length} pending
+          <span className="flex items-center gap-1 text-zinc-500">
+            <Clock size={10} />
+            {shots.filter(s => s.status === 'pending').length}
           </span>
         </div>
       </div>
@@ -338,7 +361,7 @@ export function ShotListPanel({
 
       {/* Quick Actions Footer */}
       {sortedShots.length > 0 && (
-        <div className="flex-shrink-0 p-3 border-t border-zinc-800">
+        <div className="flex-shrink-0 p-3 border-t border-white/5">
           <button
             onClick={() => {
               // Generate all pending shots
@@ -346,7 +369,12 @@ export function ShotListPanel({
               pendingShots.forEach(s => onGenerateShot(s.id))
             }}
             disabled={!shots.some(s => s.status === 'pending') || isLoading}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-white font-medium text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className={cn(
+              "w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-medium text-sm transition-all duration-300",
+              "bg-white/5 backdrop-blur-sm border border-white/10 text-white",
+              "hover:bg-white/10 hover:border-white/20",
+              "disabled:opacity-50 disabled:cursor-not-allowed"
+            )}
           >
             <Sparkles size={14} className="text-skinny-yellow" />
             Generate All Pending

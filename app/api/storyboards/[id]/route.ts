@@ -26,6 +26,9 @@ function transformStoryboard(sb: any) {
 }
 
 function transformShot(shot: any) {
+  // Get the generated image URL from the linked generation
+  const generatedImageUrl = shot.generations?.output_urls?.[0] || null
+
   return {
     id: shot.id,
     storyboardId: shot.storyboard_id,
@@ -38,6 +41,7 @@ function transformShot(shot: any) {
     durationSeconds: shot.duration_seconds,
     mediaType: shot.media_type,
     generationId: shot.generation_id,
+    generatedImageUrl, // From the generations table
     prompt: shot.prompt,
     modelSlug: shot.model_slug,
     status: shot.status,
@@ -100,7 +104,7 @@ export async function GET(
       return NextResponse.json({ error: 'Storyboard not found' }, { status: 404 })
     }
 
-    // Fetch shots with entity references
+    // Fetch shots with entity references and generation output URLs
     const { data: shots, error: shotsError } = await sbAdmin
       .from('storyboard_shots')
       .select(`
@@ -111,6 +115,11 @@ export async function GET(
           entity_id,
           role,
           notes
+        ),
+        generations (
+          id,
+          output_urls,
+          replicate_status
         )
       `)
       .eq('storyboard_id', id)

@@ -3,7 +3,7 @@
 import { useRef, useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { cn } from '@/lib/utils'
-import { Play, Image, Video, Check, Clock, AlertCircle, ChevronLeft, ChevronRight, Expand, Film } from 'lucide-react'
+import { Play, Image, Video, Check, Clock, AlertCircle, ChevronLeft, ChevronRight, Expand, Film, Loader2 } from 'lucide-react'
 import { StoryboardShot, StoryboardEntity } from '@/lib/types'
 import { EntityTypeBadge } from './entity-type-badge'
 import { TimelineSkeleton } from './storyboard-skeleton'
@@ -82,28 +82,41 @@ function TimelineShotCard({
       exit={{ opacity: 0, scale: 0.95 }}
       layout
       className={cn(
-        "group relative flex-shrink-0 w-20 h-20 rounded-lg overflow-hidden cursor-pointer transition-all",
+        "group relative flex-shrink-0 w-28 h-28 rounded-lg overflow-hidden cursor-pointer transition-all",
         "border-2",
         isSelected
           ? "border-skinny-yellow shadow-lg shadow-skinny-yellow/20"
+          : shot.status === 'completed'
+          ? "border-green-500/30 hover:border-green-500/50"
+          : shot.status === 'generating'
+          ? "border-yellow-500/30"
+          : shot.status === 'error'
+          ? "border-red-500/30 hover:border-red-500/50"
           : "border-zinc-700 hover:border-zinc-600"
       )}
       onClick={onSelect}
     >
       {/* Background - show thumbnail if completed, otherwise placeholder */}
       <div className="absolute inset-0 bg-zinc-800">
-        {shot.status === 'completed' && shot.generationId ? (
-          // Show generated image thumbnail
-          <div className="w-full h-full bg-gradient-to-br from-zinc-700 to-zinc-800 flex items-center justify-center">
-            <Check size={16} className="text-green-400" />
+        {shot.status === 'completed' && shot.generatedImageUrl ? (
+          // Show actual generated image
+          <img
+            src={shot.generatedImageUrl}
+            alt={shot.title || `Shot ${shot.shotNumber}`}
+            className="w-full h-full object-cover"
+          />
+        ) : shot.status === 'generating' ? (
+          // Show loading spinner
+          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-yellow-900/20 to-zinc-900">
+            <Loader2 size={24} className="text-skinny-yellow animate-spin" />
           </div>
         ) : (
           // Show placeholder with media type icon
           <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-zinc-800 to-zinc-900">
             {shot.mediaType === 'video' ? (
-              <Video size={16} className="text-zinc-600" />
+              <Video size={20} className="text-zinc-600" />
             ) : (
-              <Image size={16} className="text-zinc-600" />
+              <Image size={20} className="text-zinc-600" />
             )}
           </div>
         )}
@@ -292,8 +305,8 @@ export function TimelineStrip({
         </AnimatePresence>
 
         {/* Add Shot Placeholder */}
-        <div className="flex-shrink-0 w-20 h-20 rounded-lg border-2 border-dashed border-zinc-700 flex items-center justify-center hover:border-zinc-600 transition-colors cursor-pointer">
-          <span className="text-xs text-zinc-600">+</span>
+        <div className="flex-shrink-0 w-28 h-28 rounded-lg border-2 border-dashed border-zinc-700 flex items-center justify-center hover:border-zinc-600 transition-colors cursor-pointer">
+          <span className="text-lg text-zinc-600">+</span>
         </div>
       </div>
 
