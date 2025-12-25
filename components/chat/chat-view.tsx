@@ -431,15 +431,13 @@ export function ChatView() {
                 const isConfirmationMsg = index === lastConfirmationIndex && !isLoading
                 let pendingAttachments: ChatAttachment[] | undefined
                 if (isConfirmationMsg && message.role === 'assistant') {
-                  // Find the most recent user message before this one
-                  for (let i = index - 1; i >= 0; i--) {
-                    if (messages[i].role === 'user' && messages[i].attachments?.length) {
-                      // Preserve FULL ChatAttachment objects (not just url/name) so we can pass them to sendMessage
-                      pendingAttachments = messages[i].attachments?.filter(
-                        a => (a.type === 'image' || a.type === 'reference') && (a.url || a.base64)
-                      )
-                      break
-                    }
+                  // ONLY check the IMMEDIATE previous message for attachments
+                  // This prevents old reference images from earlier in the chat being auto-added
+                  const prevMessage = messages[index - 1]
+                  if (prevMessage?.role === 'user' && prevMessage?.attachments?.length) {
+                    pendingAttachments = prevMessage.attachments.filter(
+                      a => (a.type === 'image' || a.type === 'reference') && (a.url || a.base64)
+                    )
                   }
                 }
                 return (

@@ -833,12 +833,9 @@ export const ChatMessage = memo(function ChatMessage({ message, onQuickGenerate,
   const [editableRefs, setEditableRefs] = useState<ChatAttachment[]>(pendingReferenceImages || [])
   const [showImagePicker, setShowImagePicker] = useState(false)
 
-  // Sync when pendingReferenceImages changes (e.g., when message re-renders)
-  useEffect(() => {
-    if (pendingReferenceImages) {
-      setEditableRefs(pendingReferenceImages)
-    }
-  }, [pendingReferenceImages])
+  // NOTE: Removed useEffect that was syncing pendingReferenceImages to editableRefs
+  // The useEffect was causing a bug where user removals were being overwritten on parent re-renders
+  // The initial state from useState is sufficient - we don't need to sync on every prop change
 
   // Handlers for editing reference images
   const handleRemoveRef = useCallback((idToRemove: string) => {
