@@ -5,7 +5,8 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { cn } from '@/lib/utils'
 import {
   X, Plus, Search, ChevronRight, Check, Trash2,
-  Edit3, Copy, ToggleLeft, ToggleRight, Zap
+  Edit3, Copy, ToggleLeft, ToggleRight, Zap,
+  Palette, Wand2, Wrench, GitBranch, Star, LucideIcon
 } from 'lucide-react'
 import { useSkills } from '@/lib/context/skills-context'
 import { Skill, SkillCategory } from '@/lib/types'
@@ -15,12 +16,12 @@ interface SkillsManagerProps {
   onClose: () => void
 }
 
-const categoryLabels: Record<SkillCategory, { label: string; color: string }> = {
-  style: { label: 'Style', color: 'bg-purple-500/20 text-purple-400' },
-  technique: { label: 'Technique', color: 'bg-blue-500/20 text-blue-400' },
-  tool: { label: 'Tool', color: 'bg-green-500/20 text-green-400' },
-  workflow: { label: 'Workflow', color: 'bg-orange-500/20 text-orange-400' },
-  custom: { label: 'Custom', color: 'bg-skinny-yellow/20 text-skinny-yellow' },
+const categoryConfig: Record<SkillCategory, { label: string; color: string; icon: LucideIcon; iconColor: string }> = {
+  style: { label: 'Style', color: 'bg-purple-500/20 text-purple-400', icon: Palette, iconColor: 'text-purple-400' },
+  technique: { label: 'Technique', color: 'bg-blue-500/20 text-blue-400', icon: Wand2, iconColor: 'text-blue-400' },
+  tool: { label: 'Tool', color: 'bg-green-500/20 text-green-400', icon: Wrench, iconColor: 'text-green-400' },
+  workflow: { label: 'Workflow', color: 'bg-orange-500/20 text-orange-400', icon: GitBranch, iconColor: 'text-orange-400' },
+  custom: { label: 'Custom', color: 'bg-skinny-yellow/20 text-skinny-yellow', icon: Star, iconColor: 'text-skinny-yellow' },
 }
 
 function SkillCard({
@@ -28,13 +29,18 @@ function SkillCard({
   onToggle,
   onEdit,
   onDelete,
+  isHovered,
+  onHover,
 }: {
   skill: Skill
   onToggle: () => void
   onEdit: () => void
   onDelete: () => void
+  isHovered: boolean
+  onHover: (hovered: boolean) => void
 }) {
-  const cat = categoryLabels[skill.category]
+  const cat = categoryConfig[skill.category]
+  const IconComponent = cat.icon
 
   return (
     <motion.div
@@ -42,64 +48,116 @@ function SkillCard({
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -10 }}
-      className={cn(
-        "group p-4 rounded-xl border transition-all duration-200",
-        skill.isActive
-          ? "bg-white/[0.03] border-white/[0.08] hover:border-white/[0.15]"
-          : "bg-white/[0.01] border-white/[0.04] opacity-60 hover:opacity-80"
-      )}
+      className="relative group"
+      onMouseEnter={() => onHover(true)}
+      onMouseLeave={() => onHover(false)}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-lg">{skill.icon || '📌'}</span>
-            <h3 className="font-medium text-white truncate">{skill.name}</h3>
-            <span className={cn("px-2 py-0.5 rounded-full text-[10px] font-medium", cat.color)}>
-              {cat.label}
-            </span>
-          </div>
-          <p className="text-xs text-white/50 line-clamp-2 mb-2">{skill.description}</p>
-          <div className="flex items-center gap-2">
-            <code className="px-2 py-0.5 rounded bg-white/[0.05] text-skinny-yellow text-[10px] font-mono">
-              @{skill.shortcut}
-            </code>
-            <span className="text-[10px] text-white/30">
-              Used {skill.usageCount} times
-            </span>
-          </div>
-        </div>
+      <div
+        className={cn(
+          "relative overflow-hidden border transition-all duration-300 ease-out cursor-pointer",
+          isHovered
+            ? "h-28 border-skinny-lime/50 shadow-lg shadow-skinny-lime/10 bg-skinny-lime/[0.03]"
+            : "h-20 border-white/[0.08] hover:border-white/[0.15] bg-white/[0.02]",
+          !skill.isActive && "opacity-50"
+        )}
+        style={{ borderRadius: '16px' }}
+      >
+        {/* Corner brackets on hover */}
+        {isHovered && (
+          <>
+            <div className="absolute top-3 left-3 w-5 h-5">
+              <div className="absolute top-0 left-0 w-3 h-[2px] bg-skinny-lime" />
+              <div className="absolute top-0 left-0 w-[2px] h-3 bg-skinny-lime" />
+            </div>
+            <div className="absolute bottom-3 right-3 w-5 h-5">
+              <div className="absolute bottom-0 right-0 w-3 h-[2px] bg-skinny-lime" />
+              <div className="absolute bottom-0 right-0 w-[2px] h-3 bg-skinny-lime" />
+            </div>
+          </>
+        )}
 
-        <div className="flex flex-col items-end gap-2">
-          {/* Toggle */}
-          <button
-            onClick={onToggle}
-            className={cn(
-              "p-1.5 rounded-lg transition-colors",
-              skill.isActive
-                ? "text-skinny-yellow hover:bg-skinny-yellow/10"
-                : "text-white/30 hover:text-white/50 hover:bg-white/[0.05]"
+        {/* Content */}
+        <div className="flex items-center h-full px-5">
+          {/* Icon */}
+          <div className={cn(
+            "w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-300 shrink-0",
+            isHovered ? "bg-skinny-lime/20 scale-110" : "bg-white/[0.05]"
+          )}>
+            <IconComponent size={20} className={cn(
+              "transition-colors duration-300",
+              isHovered ? "text-skinny-lime" : cat.iconColor
+            )} />
+          </div>
+
+          {/* Text content */}
+          <div className="flex-1 min-w-0 ml-4">
+            <div className="flex items-center gap-2 mb-0.5">
+              <h3 className={cn(
+                "font-semibold transition-colors duration-300 truncate",
+                isHovered ? "text-skinny-lime" : "text-white"
+              )}>
+                {skill.name}
+              </h3>
+              <span className={cn(
+                "px-2 py-0.5 rounded-full text-[9px] font-medium uppercase tracking-wide shrink-0",
+                cat.color
+              )}>
+                {cat.label}
+              </span>
+            </div>
+            <p className={cn(
+              "text-xs transition-colors duration-300 line-clamp-1",
+              isHovered ? "text-white/70" : "text-white/40"
+            )}>
+              {skill.description}
+            </p>
+            {isHovered && (
+              <motion.div
+                initial={{ opacity: 0, y: 5 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="flex items-center gap-3 mt-2"
+              >
+                <code className="px-2 py-0.5 rounded bg-black/30 text-skinny-lime text-[10px] font-mono">
+                  @{skill.shortcut}
+                </code>
+                <span className="text-[10px] text-white/30">
+                  {skill.usageCount} uses
+                </span>
+              </motion.div>
             )}
-            title={skill.isActive ? 'Disable skill' : 'Enable skill'}
-          >
-            {skill.isActive ? <ToggleRight size={20} /> : <ToggleLeft size={20} />}
-          </button>
+          </div>
 
-          {/* Actions */}
-          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          {/* Actions - visible on hover */}
+          <div className={cn(
+            "flex items-center gap-1 ml-3 transition-all duration-300",
+            isHovered ? "opacity-100 translate-x-0" : "opacity-0 translate-x-2"
+          )}>
             <button
-              onClick={onEdit}
-              className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/[0.05] transition-colors"
-              title="Edit skill"
+              onClick={(e) => { e.stopPropagation(); onToggle(); }}
+              className={cn(
+                "p-2 rounded-lg transition-colors",
+                skill.isActive
+                  ? "text-skinny-lime hover:bg-skinny-lime/20"
+                  : "text-white/30 hover:text-white/60 hover:bg-white/[0.05]"
+              )}
+              title={skill.isActive ? 'Disable' : 'Enable'}
             >
-              <Edit3 size={14} />
+              {skill.isActive ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onEdit(); }}
+              className="p-2 rounded-lg text-white/40 hover:text-white hover:bg-white/[0.08] transition-colors"
+              title="Edit"
+            >
+              <Edit3 size={16} />
             </button>
             {!skill.isBuiltIn && (
               <button
-                onClick={onDelete}
-                className="p-1.5 rounded-lg text-white/40 hover:text-red-400 hover:bg-red-500/10 transition-colors"
-                title="Delete skill"
+                onClick={(e) => { e.stopPropagation(); onDelete(); }}
+                className="p-2 rounded-lg text-white/40 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                title="Delete"
               >
-                <Trash2 size={14} />
+                <Trash2 size={16} />
               </button>
             )}
           </div>
@@ -261,11 +319,22 @@ function SkillEditor({
   )
 }
 
+// Pack color mapping
+const packColorClasses: Record<string, { bg: string; border: string; text: string }> = {
+  amber: { bg: 'bg-amber-500/10', border: 'border-amber-500/30', text: 'text-amber-400' },
+  purple: { bg: 'bg-purple-500/10', border: 'border-purple-500/30', text: 'text-purple-400' },
+  rose: { bg: 'bg-rose-500/10', border: 'border-rose-500/30', text: 'text-rose-400' },
+  sky: { bg: 'bg-sky-500/10', border: 'border-sky-500/30', text: 'text-sky-400' },
+  emerald: { bg: 'bg-emerald-500/10', border: 'border-emerald-500/30', text: 'text-emerald-400' },
+  yellow: { bg: 'bg-skinny-yellow/10', border: 'border-skinny-yellow/30', text: 'text-skinny-yellow' },
+}
+
 export function SkillsManager({ isOpen, onClose }: SkillsManagerProps) {
-  const { state, addSkill, updateSkill, deleteSkill, toggleSkill, searchSkills } = useSkills()
+  const { state, addSkill, updateSkill, deleteSkill, toggleSkill, searchSkills, skillPacks, activateSkillPack, deactivateSkillPack, isPackActive } = useSkills()
   const [search, setSearch] = useState('')
   const [editingSkill, setEditingSkill] = useState<Skill | null>(null)
   const [isCreating, setIsCreating] = useState(false)
+  const [hoveredSkillId, setHoveredSkillId] = useState<string | null>(null)
 
   const filteredSkills = search ? searchSkills(search) : state.skills
 
@@ -355,6 +424,68 @@ export function SkillsManager({ isOpen, onClose }: SkillsManagerProps) {
                 </button>
               </div>
 
+              {/* Skill Packs Section */}
+              <div className="px-6 py-4 border-b border-white/[0.08]">
+                <div className="flex items-center gap-2 mb-3">
+                  <Star size={14} className="text-skinny-yellow" />
+                  <h3 className="text-sm font-medium text-white">Skill Packs</h3>
+                  <span className="text-[10px] text-white/40">Quick-activate skill bundles</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {skillPacks.map((pack) => {
+                    const isActive = isPackActive(pack.id)
+                    const colors = packColorClasses[pack.color] || packColorClasses.yellow
+                    return (
+                      <motion.button
+                        key={pack.id}
+                        whileHover={{ scale: 1.02 }}
+                        whileTap={{ scale: 0.98 }}
+                        onClick={() => isActive ? deactivateSkillPack(pack.id) : activateSkillPack(pack.id)}
+                        className={cn(
+                          "relative group p-3 rounded-xl border transition-all text-left",
+                          isActive
+                            ? `${colors.bg} ${colors.border}`
+                            : "bg-white/[0.02] border-white/[0.06] hover:bg-white/[0.04]"
+                        )}
+                      >
+                        <div className="flex items-start gap-2">
+                          <span className="text-lg">{pack.icon}</span>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className={cn(
+                                "text-sm font-medium",
+                                isActive ? colors.text : "text-white"
+                              )}>
+                                {pack.name}
+                              </span>
+                              {isActive && (
+                                <Check size={12} className={colors.text} />
+                              )}
+                            </div>
+                            <p className="text-[10px] text-white/40 line-clamp-1">{pack.description}</p>
+                            <div className="flex flex-wrap gap-1 mt-1.5">
+                              {pack.skills.slice(0, 3).map((shortcut) => (
+                                <span
+                                  key={shortcut}
+                                  className="px-1.5 py-0.5 rounded bg-black/20 text-[9px] text-white/50"
+                                >
+                                  @{shortcut}
+                                </span>
+                              ))}
+                              {pack.skills.length > 3 && (
+                                <span className="px-1.5 py-0.5 text-[9px] text-white/30">
+                                  +{pack.skills.length - 3} more
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </motion.button>
+                    )
+                  })}
+                </div>
+              </div>
+
               {/* Skills List */}
               <div className="flex-1 overflow-y-auto p-6 space-y-3">
                 <AnimatePresence mode="popLayout">
@@ -366,6 +497,8 @@ export function SkillsManager({ isOpen, onClose }: SkillsManagerProps) {
                         onToggle={() => toggleSkill(skill.id)}
                         onEdit={() => setEditingSkill(skill)}
                         onDelete={() => handleDelete(skill)}
+                        isHovered={hoveredSkillId === skill.id}
+                        onHover={(hovered) => setHoveredSkillId(hovered ? skill.id : null)}
                       />
                     ))
                   ) : (

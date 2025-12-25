@@ -1,9 +1,9 @@
 'use client'
 
 import { memo, useMemo, useEffect } from 'react'
-import { motion } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
 import { cn } from '@/lib/utils'
-import { User, Bot, Copy, Check, Loader2, Image as ImageIcon, AlertCircle, Download, ExternalLink, Bookmark, Video, RefreshCw, MessageSquarePlus, Pencil, Sparkles, Play } from 'lucide-react'
+import { User, Bot, Copy, Check, Loader2, Image as ImageIcon, AlertCircle, Download, ExternalLink, Bookmark, Video, RefreshCw, MessageSquarePlus, Pencil, Sparkles, Play, Save, ChevronDown, ChevronUp, ChevronRight, Lightbulb, X, Plus } from 'lucide-react'
 import { ChatMessage as ChatMessageType, ChatAttachment, GenerationResult } from '@/lib/context/chat-context'
 import { useState, useCallback } from 'react'
 import Image from 'next/image'
@@ -11,7 +11,11 @@ import ReactMarkdown from 'react-markdown'
 import { useGeneration, Generation } from '@/lib/context/generation-context'
 import { useApp } from '@/lib/context/app-context'
 import { useSkills } from '@/lib/context/skills-context'
+import { useSavedPrompts } from '@/lib/context/saved-prompts-context'
 import { Skill } from '@/lib/types'
+import { toast } from 'sonner'
+import { SaveSkillModal } from '@/components/modals/save-skill-modal'
+import { DirectorsNotes } from '@/lib/context/chat-context'
 
 // Smart image component that handles temporary URL failures
 // Falls back to permanent URL from database if temp URL fails
@@ -212,9 +216,74 @@ function renderWithSkillHighlights(content: string, skills: Skill[]): React.Reac
 
 interface ChatMessageProps {
   message: ChatMessageType
-  onQuickGenerate?: () => void
+  /** Callback when Generate button is clicked - receives the final attachments to use */
+  onQuickGenerate?: (attachments?: ChatAttachment[]) => void
   onEditPrompt?: () => void
   showQuickActions?: boolean
+  /** Full ChatAttachment objects that will be used when Generate is clicked - can be edited */
+  pendingReferenceImages?: ChatAttachment[]
+}
+
+// Director's Notes Display - Expandable insights from the AI
+function DirectorsNotesDisplay({ notes }: { notes: DirectorsNotes }) {
+  const [isExpanded, setIsExpanded] = useState(false)
+
+  if (!notes || (!notes.modelChoice && !notes.promptEnhancements && !notes.tips)) {
+    return null
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="mt-3"
+    >
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="flex items-center gap-2 text-xs text-white/40 hover:text-skinny-yellow transition-colors group"
+      >
+        <Lightbulb size={12} className="group-hover:text-skinny-yellow" />
+        <span>Director's Notes</span>
+        {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+      </button>
+
+      {isExpanded && (
+        <motion.div
+          initial={{ opacity: 0, height: 0 }}
+          animate={{ opacity: 1, height: 'auto' }}
+          exit={{ opacity: 0, height: 0 }}
+          className="mt-2 p-3 rounded-xl bg-skinny-yellow/[0.03] border border-skinny-yellow/10"
+        >
+          <div className="space-y-2.5">
+            {notes.modelChoice && (
+              <div>
+                <span className="text-[10px] text-skinny-yellow/70 uppercase tracking-wide font-medium">Model Choice</span>
+                <p className="text-xs text-white/60 mt-0.5">{notes.modelChoice}</p>
+              </div>
+            )}
+            {notes.promptEnhancements && (
+              <div>
+                <span className="text-[10px] text-skinny-yellow/70 uppercase tracking-wide font-medium">What I Added</span>
+                <p className="text-xs text-white/60 mt-0.5">{notes.promptEnhancements}</p>
+              </div>
+            )}
+            {notes.parameterReasoning && (
+              <div>
+                <span className="text-[10px] text-skinny-yellow/70 uppercase tracking-wide font-medium">Settings</span>
+                <p className="text-xs text-white/60 mt-0.5">{notes.parameterReasoning}</p>
+              </div>
+            )}
+            {notes.tips && (
+              <div className="pt-2 border-t border-skinny-yellow/10">
+                <span className="text-[10px] text-skinny-yellow/70 uppercase tracking-wide font-medium">Tips</span>
+                <p className="text-xs text-skinny-yellow/80 mt-0.5">{notes.tips}</p>
+              </div>
+            )}
+          </div>
+        </motion.div>
+      )}
+    </motion.div>
+  )
 }
 
 // Inline Generation Card for chat
@@ -613,11 +682,63 @@ function GenerationInline({ generation }: { generation: GenerationResult }) {
           </div>
         )}
         <p className="mt-2 text-xs text-white/30 italic">"{effectiveResult.prompt}"</p>
+
+        {/* Reference images used in this generation */}
+        {effectiveResult.referenceImages && effectiveResult.referenceImages.length > 0 && (
+          <ReferenceImagesCollapsible referenceImages={effectiveResult.referenceImages} />
+        )}
       </div>
     )
   }
 
   return null
+}
+
+// Collapsible reference images section
+function ReferenceImagesCollapsible({ referenceImages }: { referenceImages: Array<{ url: string; purpose: string }> }) {
+  const [isExpanded, setIsExpanded] = useState(false)
+
+  return (
+    <div className="mt-3 pt-2 border-t border-white/[0.05]">
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="flex items-center gap-2 text-[11px] text-white/40 hover:text-white/60 transition-colors"
+      >
+        <ChevronRight
+          size={12}
+          className={cn("transition-transform", isExpanded && "rotate-90")}
+        />
+        <ImageIcon size={12} />
+        <span>{referenceImages.length} reference image{referenceImages.length > 1 ? 's' : ''} used</span>
+      </button>
+      <AnimatePresence>
+        {isExpanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            <div className="flex gap-2 mt-2 flex-wrap">
+              {referenceImages.map((img, idx) => (
+                <div
+                  key={idx}
+                  className="w-12 h-12 rounded-lg overflow-hidden border border-white/[0.1] bg-white/[0.03]"
+                >
+                  <img
+                    src={img.url}
+                    alt={`Reference ${idx + 1}`}
+                    className="w-full h-full object-cover"
+                  />
+                </div>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  )
 }
 
 // Attachment previews
@@ -700,10 +821,34 @@ function AttachmentPreviews({ attachments }: { attachments: ChatAttachment[] }) 
   )
 }
 
-export const ChatMessage = memo(function ChatMessage({ message, onQuickGenerate, onEditPrompt, showQuickActions }: ChatMessageProps) {
+export const ChatMessage = memo(function ChatMessage({ message, onQuickGenerate, onEditPrompt, showQuickActions, pendingReferenceImages }: ChatMessageProps) {
   const [copied, setCopied] = useState(false)
+  const [promptSaved, setPromptSaved] = useState(false)
+  const [showSkillModal, setShowSkillModal] = useState(false)
   const isUser = message.role === 'user'
   const isAssistant = message.role === 'assistant'
+  const { savePrompt } = useSavedPrompts()
+
+  // Editable reference images - allows users to add/remove before clicking Generate
+  const [editableRefs, setEditableRefs] = useState<ChatAttachment[]>(pendingReferenceImages || [])
+  const [showImagePicker, setShowImagePicker] = useState(false)
+
+  // Sync when pendingReferenceImages changes (e.g., when message re-renders)
+  useEffect(() => {
+    if (pendingReferenceImages) {
+      setEditableRefs(pendingReferenceImages)
+    }
+  }, [pendingReferenceImages])
+
+  // Handlers for editing reference images
+  const handleRemoveRef = useCallback((idToRemove: string) => {
+    setEditableRefs(prev => prev.filter(ref => ref.id !== idToRemove))
+  }, [])
+
+  const handleAddRef = useCallback((newAttachment: ChatAttachment) => {
+    setEditableRefs(prev => [...prev, newAttachment])
+    setShowImagePicker(false)
+  }, [])
 
   // Detect if this is a confirmation/cost estimate message
   // Look for patterns like "Estimated cost:" or "Ready to create" or cost estimates
@@ -746,6 +891,37 @@ export const ChatMessage = memo(function ChatMessage({ message, onQuickGenerate,
       console.error('Failed to copy:', err)
     }
   }, [displayContent])
+
+  // Detect if this message contains a saveable prompt (assistant responses with substantial content)
+  const isSaveablePrompt = useMemo(() => {
+    if (!isAssistant || !displayContent || message.isStreaming) return false
+    // Must have at least 50 chars of content to be worth saving
+    return displayContent.length >= 50
+  }, [isAssistant, displayContent, message.isStreaming])
+
+  // Save the prompt to the user's library
+  const handleSavePrompt = useCallback(async () => {
+    if (!displayContent || promptSaved) return
+
+    try {
+      const saved = await savePrompt({
+        prompt: displayContent,
+        category: 'general',
+      })
+
+      if (saved) {
+        setPromptSaved(true)
+        toast.success('Prompt saved to library!', {
+          description: 'Find it in your Library under Saved Prompts',
+        })
+      } else {
+        toast.error('Failed to save prompt')
+      }
+    } catch (err) {
+      console.error('Failed to save prompt:', err)
+      toast.error('Failed to save prompt')
+    }
+  }, [displayContent, promptSaved, savePrompt])
 
   return (
     <motion.div
@@ -853,15 +1029,47 @@ export const ChatMessage = memo(function ChatMessage({ message, onQuickGenerate,
           {/* Generation inline */}
           {message.generation && <GenerationInline generation={message.generation} />}
 
-          {/* Copy button (assistant only) */}
+          {/* Director's Notes - appears after generations */}
+          {message.directorsNotes && <DirectorsNotesDisplay notes={message.directorsNotes} />}
+
+          {/* Action buttons (assistant only) */}
           {isAssistant && displayContent && !message.isStreaming && (
-            <button
-              onClick={copyContent}
-              className="absolute -bottom-2 right-2 p-1.5 rounded-lg backdrop-blur-sm bg-black/60 border border-white/[0.08] text-white/40 hover:text-white hover:border-white/20 opacity-0 group-hover:opacity-100 transition-all shadow-lg"
-              title="Copy message"
-            >
-              {copied ? <Check size={12} className="text-skinny-yellow" /> : <Copy size={12} />}
-            </button>
+            <div className="absolute -bottom-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+              {/* Save as Skill button */}
+              {isSaveablePrompt && (
+                <button
+                  onClick={() => setShowSkillModal(true)}
+                  className="p-1.5 rounded-lg backdrop-blur-sm bg-black/60 border border-white/[0.08] text-white/40 hover:text-skinny-yellow hover:border-skinny-yellow/30 shadow-lg transition-all"
+                  title="Save as Skill"
+                >
+                  <Sparkles size={12} />
+                </button>
+              )}
+              {/* Save prompt button */}
+              {isSaveablePrompt && (
+                <button
+                  onClick={handleSavePrompt}
+                  disabled={promptSaved}
+                  className={cn(
+                    "p-1.5 rounded-lg backdrop-blur-sm border shadow-lg transition-all",
+                    promptSaved
+                      ? "bg-skinny-yellow/20 border-skinny-yellow/30 text-skinny-yellow"
+                      : "bg-black/60 border-white/[0.08] text-white/40 hover:text-skinny-yellow hover:border-skinny-yellow/30"
+                  )}
+                  title={promptSaved ? "Prompt saved" : "Save prompt to library"}
+                >
+                  {promptSaved ? <Check size={12} /> : <Save size={12} />}
+                </button>
+              )}
+              {/* Copy button */}
+              <button
+                onClick={copyContent}
+                className="p-1.5 rounded-lg backdrop-blur-sm bg-black/60 border border-white/[0.08] text-white/40 hover:text-white hover:border-white/20 shadow-lg transition-all"
+                title="Copy message"
+              >
+                {copied ? <Check size={12} className="text-skinny-yellow" /> : <Copy size={12} />}
+              </button>
+            </div>
           )}
         </div>
 
@@ -870,22 +1078,88 @@ export const ChatMessage = memo(function ChatMessage({ message, onQuickGenerate,
           <motion.div
             initial={{ opacity: 0, y: 5 }}
             animate={{ opacity: 1, y: 0 }}
-            className="flex items-center gap-2 mt-2"
+            className="mt-3 space-y-2"
           >
-            <button
-              onClick={onQuickGenerate}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-skinny-yellow text-black rounded-lg font-bold text-xs hover:bg-skinny-yellow/90 active:scale-95 transition-all shadow-lg shadow-skinny-yellow/20"
-            >
-              <Play size={14} className="fill-current" />
-              Generate
-            </button>
-            <button
-              onClick={onEditPrompt}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 text-zinc-300 rounded-lg font-medium text-xs hover:bg-zinc-700 hover:text-white active:scale-95 transition-all border border-zinc-700"
-            >
-              <Pencil size={12} />
-              Edit
-            </button>
+            {/* Interactive reference images - can add/remove before generating */}
+            <div className="flex items-center gap-2 p-2 rounded-lg bg-white/[0.03] border border-white/[0.06]">
+              <ImageIcon size={14} className="text-skinny-yellow shrink-0" />
+              <span className="text-[11px] text-white/50">
+                {editableRefs.length > 0 ? 'References:' : 'No references'}
+              </span>
+              <div className="flex gap-1.5 flex-wrap">
+                {editableRefs.map((img) => (
+                  <div
+                    key={img.id}
+                    className="relative group w-10 h-10"
+                    title={img.name || 'Reference image'}
+                  >
+                    <div className="w-full h-full rounded-md overflow-hidden border border-white/[0.1] bg-zinc-800">
+                      <img
+                        src={img.url}
+                        alt={img.name || 'Reference'}
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                    {/* Remove button - appears on hover */}
+                    <button
+                      onClick={() => handleRemoveRef(img.id)}
+                      className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-500 hover:bg-red-600 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-lg"
+                      title="Remove reference"
+                    >
+                      <X size={10} className="text-white" />
+                    </button>
+                  </div>
+                ))}
+                {/* Add button with file input */}
+                <label
+                  className="w-10 h-10 rounded-md border border-dashed border-white/20 flex items-center justify-center hover:border-skinny-lime/50 hover:bg-white/[0.02] transition-colors cursor-pointer"
+                  title="Add reference image"
+                >
+                  <Plus size={16} className="text-white/40" />
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0]
+                      if (!file) return
+
+                      // Create a URL for the file and add as attachment
+                      const url = URL.createObjectURL(file)
+                      const newAttachment: ChatAttachment = {
+                        id: `ref_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+                        type: 'reference',
+                        url,
+                        name: file.name,
+                        purpose: 'reference',
+                        file,
+                        mimeType: file.type,
+                      }
+                      handleAddRef(newAttachment)
+
+                      // Reset input so same file can be selected again
+                      e.target.value = ''
+                    }}
+                  />
+                </label>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => onQuickGenerate?.(editableRefs.length > 0 ? editableRefs : undefined)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-skinny-yellow text-black rounded-lg font-bold text-xs hover:bg-skinny-yellow/90 active:scale-95 transition-all shadow-lg shadow-skinny-yellow/20"
+              >
+                <Play size={14} className="fill-current" />
+                Generate{editableRefs.length > 0 ? ` (${editableRefs.length} ref${editableRefs.length > 1 ? 's' : ''})` : ''}
+              </button>
+              <button
+                onClick={onEditPrompt}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 text-zinc-300 rounded-lg font-medium text-xs hover:bg-zinc-700 hover:text-white active:scale-95 transition-all border border-zinc-700"
+              >
+                <Pencil size={12} />
+                Edit
+              </button>
+            </div>
           </motion.div>
         )}
 
@@ -897,6 +1171,18 @@ export const ChatMessage = memo(function ChatMessage({ message, onQuickGenerate,
           {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
         </span>
       </div>
+
+      {/* Save as Skill Modal */}
+      <SaveSkillModal
+        isOpen={showSkillModal}
+        onClose={() => setShowSkillModal(false)}
+        initialContent={displayContent}
+        onSuccess={() => {
+          toast.success('Skill created!', {
+            description: 'You can now use it with @shortcut in your prompts',
+          })
+        }}
+      />
     </motion.div>
   )
 })

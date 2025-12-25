@@ -9,6 +9,8 @@ import { SkillsProvider } from '@/lib/context/skills-context'
 import { UserProvider } from '@/lib/context/user-context'
 import { GiftProvider } from '@/lib/context/gift-context'
 import { StoryboardProvider } from '@/lib/context/storyboard-context'
+import { SessionsProvider } from '@/lib/context/sessions-context'
+import { SavedPromptsProvider } from '@/lib/context/saved-prompts-context'
 import { GlobalModals } from '@/components/modals/global-modals'
 import { Toaster } from 'sonner'
 
@@ -40,19 +42,23 @@ export default function RootLayout({
                     <FolderProvider>
                       <WorkflowProvider>
                         <StoryboardProvider>
-                          {children}
-                          <GlobalModals />
-                        <Toaster
-                          theme="dark"
-                          position="bottom-right"
-                          toastOptions={{
-                            style: {
-                              background: 'rgba(39, 39, 42, 0.95)',
-                              border: '1px solid rgba(255, 255, 255, 0.1)',
-                              color: '#fff',
-                            },
-                          }}
-                        />
+                          <SessionsProvider>
+                            <SavedPromptsProvider>
+                              {children}
+                              <GlobalModals />
+                              <Toaster
+                                theme="dark"
+                                position="bottom-right"
+                                toastOptions={{
+                                  style: {
+                                    background: 'rgba(39, 39, 42, 0.95)',
+                                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                                    color: '#fff',
+                                  },
+                                }}
+                              />
+                            </SavedPromptsProvider>
+                          </SessionsProvider>
                         </StoryboardProvider>
                       </WorkflowProvider>
                     </FolderProvider>

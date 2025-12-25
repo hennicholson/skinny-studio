@@ -11,6 +11,7 @@ import {
   Folder,
   Plus,
   Sparkles,
+  FileText,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Folder as FolderType } from '@/lib/context/folder-context'
@@ -25,7 +26,7 @@ import {
 } from '@/components/ui/sidebar'
 
 // Smart folder types
-export type SmartFolder = 'all' | 'desktop' | 'recents' | 'images' | 'videos'
+export type SmartFolder = 'all' | 'desktop' | 'recents' | 'images' | 'videos' | 'prompts'
 
 interface LibrarySidebarProps {
   // Smart folders
@@ -37,6 +38,7 @@ interface LibrarySidebarProps {
     recents: number
     images: number
     videos: number
+    prompts: number
   }
 
   // User folders
@@ -67,6 +69,7 @@ const smartFolders: { id: SmartFolder; label: string; icon: typeof LayoutGrid }[
   { id: 'recents', label: 'Recents', icon: Clock },
   { id: 'images', label: 'Images', icon: Image },
   { id: 'videos', label: 'Videos', icon: Video },
+  { id: 'prompts', label: 'Saved Prompts', icon: FileText },
 ]
 
 // Inner component that uses the sidebar context

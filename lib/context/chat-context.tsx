@@ -4,15 +4,17 @@ import { createContext, useContext, useReducer, useCallback, ReactNode, useEffec
 import { getApiSettings } from '@/lib/api-settings'
 import { fileToBase64 } from '@/lib/image-utils'
 import { saveToStorage, loadFromStorage, STORAGE_KEYS } from '@/lib/storage'
+import { toast } from 'sonner'
 
 // Types
-export type ImagePurpose = 'reference' | 'starting_frame' | 'edit_target' | 'last_frame'
+export type ImagePurpose = 'reference' | 'starting_frame' | 'edit_target' | 'last_frame' | 'analyze'
 
 export const IMAGE_PURPOSE_LABELS: Record<ImagePurpose, string> = {
   reference: 'Reference',
   starting_frame: 'Start Frame',
   edit_target: 'Edit',
   last_frame: 'End Frame',
+  analyze: 'Analyze',
 }
 
 export const IMAGE_PURPOSE_DESCRIPTIONS: Record<ImagePurpose, string> = {
@@ -20,6 +22,7 @@ export const IMAGE_PURPOSE_DESCRIPTIONS: Record<ImagePurpose, string> = {
   starting_frame: 'First frame for video generation',
   edit_target: 'Image to modify or edit',
   last_frame: 'End frame for video (Veo)',
+  analyze: 'AI analyzes the image content for context',
 }
 
 export interface ChatAttachment {
@@ -31,6 +34,9 @@ export interface ChatAttachment {
   base64?: string
   mimeType?: string
   purpose?: ImagePurpose
+  // AI image analysis fields
+  analysis?: string
+  analysisStatus?: 'pending' | 'analyzing' | 'complete' | 'error'
 }
 
 export interface GenerationResult {
@@ -44,6 +50,7 @@ export interface GenerationResult {
     prompt: string
     pending?: boolean  // True if still processing in background
     message?: string   // Message to display when pending
+    referenceImages?: Array<{ url: string; purpose: string }>  // Reference images used in generation
   }
   error?: string
   // Balance error fields
@@ -52,12 +59,21 @@ export interface GenerationResult {
   available?: number // cents available in balance
 }
 
+// Director's Notes from AI
+export interface DirectorsNotes {
+  modelChoice: string
+  promptEnhancements: string
+  parameterReasoning: string
+  tips: string
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
   content: string
   timestamp: Date
   generation?: GenerationResult
+  directorsNotes?: DirectorsNotes
   attachments?: ChatAttachment[]
   isStreaming?: boolean
 }
@@ -319,10 +335,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     params: Record<string, any>
   ) => {
     const POLL_INTERVAL_MS = 3000 // 3 seconds
-    const POLL_TIMEOUT_MS = 300000 // 5 minutes max
+
+    // Use longer timeout for multi-image generations (SeedDream sequential mode takes longer)
+    const numOutputs = params.numOutputs || params.num_outputs || 1
+    const isSequential = numOutputs > 1
+    const POLL_TIMEOUT_MS = isSequential
+      ? 600000  // 10 minutes for sequential/multi-image generations
+      : 300000  // 5 minutes for single images
+
     const startTime = Date.now()
 
-    console.log('[ChatContext] Starting poll for generation:', generationId)
+    console.log('[ChatContext] Starting poll for generation:', generationId, 'numOutputs:', numOutputs, 'timeout:', POLL_TIMEOUT_MS / 1000, 's')
 
     while (Date.now() - startTime < POLL_TIMEOUT_MS) {
       await new Promise(r => setTimeout(r, POLL_INTERVAL_MS))
@@ -382,6 +405,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
               prompt: generation.prompt,
             }
           })
+
+          // Show toast notification for generation completion
+          const isVideo = model?.toLowerCase().includes('veo') || model?.toLowerCase().includes('wan') || model?.toLowerCase().includes('kling')
+          const costCents = generation.cost_cents
+          toast.success(isVideo ? 'Video ready!' : 'Image ready!', {
+            description: costCents ? `$${(costCents / 100).toFixed(2)} charged` : model,
+            duration: 5000,
+          })
+
           if (onGenerationCompleteCallback) {
             console.log('[ChatContext] Calling generation complete callback')
             onGenerationCompleteCallback()
@@ -395,6 +427,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             params,
             error: generation.replicate_error || 'Generation failed',
           })
+
+          // Show toast notification for generation failure
+          toast.error('Generation failed', {
+            description: generation.replicate_error || 'An error occurred',
+            duration: 5000,
+          })
+
           return
         }
         // Still processing - continue polling
@@ -480,7 +519,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             name: a.name,
             base64: a.base64,
             mimeType: a.mimeType,
-            purpose: a.purpose,  // Include purpose for generation API
+            purpose: a.purpose,
+            analysis: a.analysis,  // Include AI analysis for orchestrator context
           })),
         }))
 
@@ -601,6 +641,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
               if (parsed.skillCreation && onSkillCreationCallback && parsed.skillCreation.name) {
                 // Trigger the skill creation callback only if valid data
                 onSkillCreationCallback(parsed.skillCreation as SkillCreationData)
+              }
+              // Handle director's notes from AI
+              if (parsed.directorsNotes) {
+                updateMessage(assistantMessageId, {
+                  directorsNotes: parsed.directorsNotes
+                })
               }
             } catch {
               // Ignore parse errors for incomplete chunks

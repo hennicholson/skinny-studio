@@ -80,13 +80,27 @@ function formatDate(dateString: string): string {
   })
 }
 
-function StatusBadge({ status }: { status: Generation['replicate_status'] }) {
+function StatusBadge({ status, createdAt }: { status: Generation['replicate_status']; createdAt?: string }) {
+  // Check if generation is stuck (starting/processing for more than 2 minutes)
+  const isStuck = (status === 'starting' || status === 'processing') && createdAt &&
+    (Date.now() - new Date(createdAt).getTime()) > 2 * 60 * 1000
+
   const config = {
     succeeded: { icon: CheckCircle2, color: 'text-green-400 bg-green-500/10', label: 'Success' },
     failed: { icon: XCircle, color: 'text-red-400 bg-red-500/10', label: 'Failed' },
     canceled: { icon: XCircle, color: 'text-orange-400 bg-orange-500/10', label: 'Canceled' },
     starting: { icon: Loader2, color: 'text-blue-400 bg-blue-500/10', label: 'Starting' },
     processing: { icon: Loader2, color: 'text-yellow-400 bg-yellow-500/10', label: 'Processing' },
+  }
+
+  // Override for stuck generations
+  if (isStuck) {
+    return (
+      <span className={cn("inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium", "text-amber-400 bg-amber-500/10")}>
+        <AlertCircle size={10} />
+        Checking...
+      </span>
+    )
   }
 
   const { icon: Icon, color, label } = config[status] || config.failed
@@ -100,11 +114,43 @@ function StatusBadge({ status }: { status: Generation['replicate_status'] }) {
   )
 }
 
-function GenerationCard({ generation }: { generation: Generation }) {
+function GenerationCard({ generation, onRefresh }: { generation: Generation; onRefresh?: () => void }) {
   const [expanded, setExpanded] = useState(false)
+  const [isRetrying, setIsRetrying] = useState(false)
   const isVideo = generation.model_category === 'video'
   const hasOutput = generation.output_urls && generation.output_urls.length > 0
   const previewUrl = hasOutput ? generation.output_urls![0] : null
+
+  // Check if generation is stuck
+  const isStuck = (generation.replicate_status === 'starting' || generation.replicate_status === 'processing') &&
+    (Date.now() - new Date(generation.created_at).getTime()) > 2 * 60 * 1000
+
+  // Retry check for stuck generations
+  const handleRetryCheck = async () => {
+    if (!generation.id || isRetrying) return
+    setIsRetrying(true)
+
+    try {
+      // Get auth headers from localStorage
+      const headers: Record<string, string> = {}
+      if (typeof window !== 'undefined') {
+        const devToken = localStorage.getItem('whop-dev-token')
+        const devUserId = localStorage.getItem('whop-dev-user-id')
+        if (devToken) headers['x-whop-user-token'] = devToken
+        if (devUserId) headers['x-whop-user-id'] = devUserId
+      }
+
+      const res = await fetch(`/api/generations/${generation.id}`, { headers })
+      if (res.ok) {
+        // Refresh the list to show updated status
+        onRefresh?.()
+      }
+    } catch (err) {
+      console.error('Retry check failed:', err)
+    } finally {
+      setIsRetrying(false)
+    }
+  }
 
   return (
     <motion.div
@@ -158,7 +204,7 @@ function GenerationCard({ generation }: { generation: Generation }) {
               <span className="font-medium text-white text-sm">
                 {generation.model_slug}
               </span>
-              <StatusBadge status={generation.replicate_status} />
+              <StatusBadge status={generation.replicate_status} createdAt={generation.created_at} />
               {isVideo && (
                 <span className="px-1.5 py-0.5 rounded text-[10px] bg-purple-500/20 text-purple-400">
                   Video
@@ -240,6 +286,22 @@ function GenerationCard({ generation }: { generation: Generation }) {
                   </div>
                 )}
               </div>
+
+              {/* Retry Check Button for stuck generations */}
+              {isStuck && (
+                <button
+                  onClick={handleRetryCheck}
+                  disabled={isRetrying}
+                  className="flex items-center justify-center gap-2 w-full py-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-medium hover:bg-amber-500/20 transition-colors disabled:opacity-50"
+                >
+                  {isRetrying ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <RefreshCw size={14} />
+                  )}
+                  {isRetrying ? 'Checking Replicate...' : 'Check Status'}
+                </button>
+              )}
 
               {/* View Output Button */}
               {previewUrl && (
@@ -444,7 +506,7 @@ export function GenerationsLog() {
           </div>
         ) : (
           generations.map((gen) => (
-            <GenerationCard key={gen.id} generation={gen} />
+            <GenerationCard key={gen.id} generation={gen} onRefresh={handleRefresh} />
           ))
         )}
       </div>

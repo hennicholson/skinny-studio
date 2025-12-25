@@ -1,8 +1,9 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import Image from 'next/image'
+import { useSearchParams, useRouter } from 'next/navigation'
 import { ModeSwitcher, Mode } from '@/components/ui/mode-switcher'
 import { ChatView } from '@/components/chat/chat-view'
 import { ChatHistorySidebar } from '@/components/chat/chat-history-sidebar'
@@ -15,18 +16,18 @@ import { User, Wallet, Settings } from 'lucide-react'
 import { useApp } from '@/lib/context/app-context'
 import { useUser } from '@/lib/context/user-context'
 
-// Check if we're in storyboard mode (to hide chat sidebar)
-function useIsStoryboardMode() {
+// Check if we're in a special mode (to hide chat sidebar)
+function useIsSpecialMode() {
   const { selectedModel } = useApp()
-  return selectedModel?.id === 'storyboard-mode'
+  return selectedModel?.id === 'storyboard-mode' || selectedModel?.id === 'session-mode'
 }
 
-// Wrapper to conditionally render chat sidebar (hidden in storyboard mode)
+// Wrapper to conditionally render chat sidebar (hidden in storyboard/session mode)
 function ChatHistorySidebarWrapper() {
-  const isStoryboardMode = useIsStoryboardMode()
+  const isSpecialMode = useIsSpecialMode()
 
-  // Don't render sidebar in storyboard mode - it interferes with storyboard selector
-  if (isStoryboardMode) {
+  // Don't render sidebar in storyboard or session mode - they have their own UI
+  if (isSpecialMode) {
     return null
   }
 
@@ -45,11 +46,47 @@ export default function Home() {
   // Settings panel state - which panel to show when entering settings
   const [settingsPanel, setSettingsPanel] = useState<'main' | 'profile' | 'balance'>('main')
 
+  const searchParams = useSearchParams()
+  const router = useRouter()
+
+  // Handle Whop dev token from URL (when redirected directly to root)
+  useEffect(() => {
+    const devToken = searchParams.get('whop-dev-user-token')
+
+    if (devToken) {
+      // Store the token for API calls
+      localStorage.setItem('whop-dev-token', devToken)
+
+      // Decode JWT to get user info
+      try {
+        const parts = devToken.split('.')
+        if (parts.length === 3) {
+          const payload = JSON.parse(atob(parts[1]))
+          console.log('Whop dev token payload:', payload)
+          localStorage.setItem('whop-dev-user-id', payload.sub || '')
+        }
+      } catch (e) {
+        console.error('Failed to decode dev token:', e)
+      }
+
+      // Remove token from URL to clean it up
+      router.replace('/')
+    }
+  }, [searchParams, router])
+
   // Get toast from app context
   const { showToast } = useApp()
 
   // Get user data and balance
-  const { balanceDollars, isLoading: userLoading, whop } = useUser()
+  const { balanceDollars, isLoading: userLoading, whop, refreshUser } = useUser()
+
+  // Refresh user data after token is stored
+  useEffect(() => {
+    const devToken = localStorage.getItem('whop-dev-token')
+    if (devToken && !whop) {
+      refreshUser()
+    }
+  }, [whop, refreshUser])
 
   // Navigate to settings with balance panel
   const goToBalanceSettings = () => {

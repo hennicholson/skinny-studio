@@ -2,7 +2,7 @@
 
 import { useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Image as ImageIcon, Video, Pencil, Film } from 'lucide-react'
+import { X, Image as ImageIcon, Video, Pencil, Film, Sparkles } from 'lucide-react'
 import { ImagePurpose, IMAGE_PURPOSE_LABELS, IMAGE_PURPOSE_DESCRIPTIONS } from '@/lib/context/chat-context'
 import { cn } from '@/lib/utils'
 
@@ -24,6 +24,7 @@ const PURPOSE_OPTIONS: Array<{
   { purpose: 'starting_frame', key: 'S', icon: Video, color: 'text-purple-400 bg-purple-500/10 border-purple-500/30' },
   { purpose: 'edit_target', key: 'E', icon: Pencil, color: 'text-orange-400 bg-orange-500/10 border-orange-500/30' },
   { purpose: 'last_frame', key: 'L', icon: Film, color: 'text-green-400 bg-green-500/10 border-green-500/30' },
+  { purpose: 'analyze', key: 'A', icon: Sparkles, color: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/30' },
 ]
 
 export function ImagePurposeModal({
@@ -69,15 +70,15 @@ export function ImagePurposeModal({
             onClick={onClose}
           />
 
-          {/* Modal */}
+          {/* Modal Container - Full screen flex centering */}
           <motion.div
-            initial={{ opacity: 0, scale: 0.95, y: 20 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.95, y: 20 }}
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
             transition={{ type: 'spring', duration: 0.3 }}
-            className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[90vw] max-w-md"
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none"
           >
-            <div className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden shadow-2xl">
+            <div className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto pointer-events-auto">
               {/* Header */}
               <div className="p-4 border-b border-zinc-800 flex items-center justify-between">
                 <h3 className="text-white font-semibold">What's this image for?</h3>

@@ -3,6 +3,7 @@
 import { createContext, useContext, useReducer, useCallback, ReactNode, useEffect } from 'react'
 import { Skill, SkillCategory, builtInSkills } from '@/lib/types'
 import { saveToStorage, loadFromStorage } from '@/lib/storage'
+import { SkillPack, skillPacks, getSkillPackById } from '@/lib/skills/skill-packs'
 
 const STORAGE_KEY = 'skinny_skills'
 
@@ -113,86 +114,186 @@ function skillsReducer(state: SkillsState, action: SkillsAction): SkillsState {
 }
 
 // Intent-to-skill mapping for AI suggestions
-// Comprehensive mapping of user intents to relevant skill shortcuts
-const INTENT_SKILL_MAP: Record<string, string[]> = {
-  // Video & Motion intents
-  video: ['cinematic', 'veo', 'motion', 'animation'],
-  cinematic: ['cinematic', 'veo', 'motion'],
-  movie: ['cinematic', 'veo', 'motion'],
-  film: ['cinematic', 'veo', 'motion'],
-  animation: ['veo', 'motion', 'animation'],
-  motion: ['veo', 'cinematic', 'motion'],
-  clip: ['veo', 'cinematic', 'social'],
-  reel: ['social', 'veo', 'cinematic'],
+// Comprehensive mapping of user intents to relevant skill shortcuts - December 2025 Update
+// Exported for use in proactive skill suggestions
+export const INTENT_SKILL_MAP: Record<string, string[]> = {
+  // ============================================
+  // VIDEO & MOTION INTENTS
+  // ============================================
+  video: ['veo', 'wan', 'kling', 'cinematic', 'camera'],
+  cinematic: ['cinematic', 'veo', 'camera', 'kling'],
+  movie: ['cinematic', 'veo', 'camera', 'kling'],
+  film: ['cinematic', 'veo', 'camera', 'kling'],
+  animation: ['veo', 'wan', 'kling'],
+  motion: ['veo', 'wan', 'kling', 'camera'],
+  clip: ['veo', 'wan', 'kling', 'social'],
+  reel: ['social', 'veo', 'kling'],
+  t2v: ['wan', 'veo', 'kling'],
+  i2v: ['wan', 'kling', 'veo'],
+  audio: ['veo', 'wan'],
+  dialogue: ['veo'],
+  soundfx: ['veo'],
 
-  // Product & Commercial intents
-  product: ['product-photo', 'product', 'ecommerce', 'commercial'],
-  ecommerce: ['product-photo', 'ecommerce', 'commercial'],
-  commercial: ['product-photo', 'commercial'],
-  advertising: ['product-photo', 'commercial', 'social'],
-  marketing: ['product-photo', 'commercial', 'social', 'text'],
-  brand: ['product-photo', 'commercial', 'text'],
+  // ============================================
+  // IMAGE MODEL INTENTS
+  // ============================================
+  flux: ['flux2', 'consistency'],
+  'flux-2': ['flux2', 'consistency'],
+  'flux2': ['flux2', 'consistency'],
+  seedream: ['seedream', 'storyboard', 'consistency'],
+  bytedance: ['seedream', 'storyboard'],
+  nano: ['nano', 'consistency'],
+  'nano-banana': ['nano', 'consistency'],
+  google: ['nano', 'veo'],
+  gemini: ['nano'],
+  references: ['flux2', 'seedream', 'nano', 'consistency'],
+  'multi-reference': ['flux2', 'seedream', 'nano', 'consistency'],
 
-  // Portrait & People intents
-  portrait: ['portrait', 'headshot', 'face', 'character'],
-  headshot: ['portrait', 'headshot'],
-  face: ['portrait', 'headshot'],
-  person: ['portrait', 'character'],
-  character: ['portrait', 'character', 'anime'],
+  // ============================================
+  // IMAGE EDITING INTENTS
+  // ============================================
+  edit: ['qwen-edit', 'p-edit'],
+  'image-edit': ['qwen-edit', 'p-edit'],
+  modify: ['qwen-edit', 'p-edit'],
+  change: ['qwen-edit', 'p-edit'],
+  remove: ['qwen-edit', 'p-edit'],
+  'background-edit': ['qwen-edit', 'p-edit', 'product'],
+  qwen: ['qwen-edit'],
+  'p-image': ['p-edit'],
+  budget: ['p-edit'],
+  batch: ['p-edit', 'seedream'],
+  retouch: ['qwen-edit', 'skin-realism'],
+  'color-change': ['qwen-edit', 'p-edit'],
+  'style-transfer': ['qwen-edit', 'consistency'],
+
+  // ============================================
+  // PRODUCT & COMMERCIAL INTENTS
+  // ============================================
+  product: ['product', 'seedream', 'flux2'],
+  ecommerce: ['product', 'seedream'],
+  commercial: ['product', 'cinematic'],
+  advertising: ['product', 'social', 'text'],
+  marketing: ['product', 'social', 'text'],
+  brand: ['product', 'consistency', 'text'],
+  catalog: ['product', 'consistency', 'seedream'],
+  'hero-shot': ['product', 'cinematic'],
+  lifestyle: ['product', 'social'],
+
+  // ============================================
+  // PORTRAIT & PEOPLE INTENTS
+  // ============================================
+  portrait: ['portrait', 'skin-realism', 'creative-vision'],
+  headshot: ['portrait', 'skin-realism'],
+  face: ['portrait', 'skin-realism'],
+  person: ['portrait', 'skin-realism', 'creative-vision'],
+  character: ['portrait', 'consistency', 'seedream'],
   selfie: ['portrait', 'social'],
+  beauty: ['portrait', 'skin-realism', 'creative-vision'],
+  skin: ['skin-realism', 'portrait'],
+  pores: ['skin-realism', 'portrait'],
+  realistic: ['skin-realism', 'portrait', 'flux2'],
+  lighting: ['portrait', 'cinematic', 'camera'],
+  rembrandt: ['portrait'],
+  butterfly: ['portrait'],
 
-  // Social Media intents
-  social: ['social', 'instagram', 'tiktok', 'reels'],
-  instagram: ['social', 'instagram'],
-  tiktok: ['social', 'tiktok', 'veo'],
-  reels: ['social', 'veo', 'cinematic'],
-  post: ['social', 'instagram'],
-  story: ['social', 'instagram'],
+  // ============================================
+  // SOCIAL MEDIA INTENTS
+  // ============================================
+  social: ['social', 'veo', 'kling'],
+  instagram: ['social', 'product'],
+  tiktok: ['social', 'veo', 'kling'],
+  reels: ['social', 'veo', 'kling'],
+  post: ['social', 'product'],
+  story: ['social', 'veo'],
+  vertical: ['social', 'veo', 'wan'],
+  '9:16': ['social', 'veo', 'wan', 'kling'],
+  '4:5': ['social', 'product'],
+  viral: ['social', 'anti-slop'],
+  engagement: ['social'],
+  thumbnail: ['social', 'text'],
 
-  // Text & Typography intents
-  text: ['text', 'typography', 'logo'],
-  typography: ['text', 'typography'],
-  logo: ['text', 'logo'],
-  poster: ['text', 'typography', 'cinematic'],
-  banner: ['text', 'typography', 'social'],
-  sign: ['text', 'typography'],
-  title: ['text', 'typography', 'cinematic'],
+  // ============================================
+  // TEXT & TYPOGRAPHY INTENTS
+  // ============================================
+  text: ['text', 'flux2', 'seedream'],
+  typography: ['text'],
+  logo: ['text', 'flux2'],
+  poster: ['text', 'cinematic'],
+  banner: ['text', 'social'],
+  sign: ['text'],
+  title: ['text', 'cinematic'],
+  signage: ['text'],
+  lettering: ['text'],
 
-  // Artistic Style intents
-  anime: ['anime', 'manga', 'illustration'],
-  manga: ['anime', 'manga'],
-  illustration: ['anime', 'illustration', 'artistic'],
-  cartoon: ['anime', 'illustration'],
-  artistic: ['artistic', 'creative', 'abstract'],
-  creative: ['artistic', 'creative', 'abstract'],
+  // ============================================
+  // ARTISTIC STYLE INTENTS
+  // ============================================
+  artistic: ['creative-vision', 'anti-slop', 'cinematic'],
+  creative: ['creative-vision', 'anti-slop'],
+  leibovitz: ['creative-vision', 'portrait'],
+  lindbergh: ['creative-vision', 'skin-realism', 'portrait'],
+  walker: ['creative-vision', 'anti-slop'],
+  meisel: ['creative-vision'],
+  newton: ['creative-vision', 'portrait'],
+  'non-generic': ['anti-slop', 'creative-vision'],
+  'anti-slop': ['anti-slop', 'creative-vision'],
+  'wabi-sabi': ['anti-slop'],
+  retro: ['anti-slop'],
+  brutalist: ['anti-slop'],
+  analog: ['anti-slop', 'cinematic'],
+  maximalist: ['anti-slop'],
+  surreal: ['anti-slop', 'creative-vision'],
+  'pop-surrealism': ['anti-slop'],
+  y2k: ['anti-slop', 'social'],
+  chrome: ['anti-slop'],
+  documentary: ['anti-slop', 'cinematic'],
 
-  // Environment & Scene intents
-  landscape: ['landscape', 'nature', 'scenic'],
-  nature: ['landscape', 'nature', 'scenic'],
-  scenic: ['landscape', 'scenic', 'cinematic'],
-  environment: ['landscape', 'cinematic'],
-  background: ['landscape', 'scenic'],
+  // ============================================
+  // CINEMATIC & CAMERA INTENTS
+  // ============================================
+  camera: ['camera', 'cinematic', 'veo'],
+  'camera-movement': ['camera', 'veo', 'kling'],
+  shot: ['camera', 'cinematic', 'veo'],
+  dolly: ['camera', 'veo'],
+  tracking: ['camera', 'veo', 'kling'],
+  crane: ['camera', 'veo'],
+  pan: ['camera', 'veo'],
+  tilt: ['camera', 'veo'],
+  handheld: ['camera', 'veo', 'kling'],
+  drone: ['camera', 'veo', 'kling'],
+  aerial: ['camera', 'veo', 'kling'],
+  'close-up': ['camera', 'portrait'],
+  'wide-shot': ['camera', 'cinematic'],
+  pov: ['camera', 'veo'],
+  lens: ['camera', 'portrait', 'product'],
+  aperture: ['camera', 'portrait'],
+  bokeh: ['camera', 'portrait'],
+  noir: ['cinematic', 'creative-vision'],
+  'golden-hour': ['cinematic', 'portrait', 'product'],
+  chiaroscuro: ['cinematic', 'portrait'],
+  'color-grading': ['cinematic', 'veo'],
 
-  // Abstract & Experimental intents
-  abstract: ['abstract', 'artistic', 'creative'],
-  experimental: ['abstract', 'artistic', 'creative'],
-  surreal: ['abstract', 'artistic', 'creative'],
+  // ============================================
+  // CONSISTENCY & WORKFLOW INTENTS
+  // ============================================
+  consistency: ['consistency', 'seedream', 'flux2'],
+  consistent: ['consistency', 'seedream'],
+  'character-sheet': ['consistency', 'seedream', 'storyboard'],
+  'brand-campaign': ['consistency', 'product', 'seedream'],
+  template: ['consistency', 'seedream'],
+  seed: ['consistency', 'flux2'],
 
-  // Sequential & Multi-image intents
-  storyboard: ['storyboard', 'sequential', 'multi-image', 'comic', 'narrative'],
-  sequential: ['storyboard', 'sequential', 'variations'],
-  variations: ['storyboard', 'sequential', 'variations'],
-  series: ['storyboard', 'sequential'],
-  comic: ['storyboard', 'comic', 'anime'],
-  narrative: ['storyboard', 'narrative', 'cinematic'],
-  multiple: ['storyboard', 'sequential', 'variations'],
-
-  // Editing intents
-  edit: ['edit', 'retouch'],
-  modify: ['edit', 'retouch'],
-  change: ['edit'],
-  remove: ['edit'],
-  'background-edit': ['edit', 'product-photo'],
+  // ============================================
+  // SEQUENTIAL & STORYBOARD INTENTS
+  // ============================================
+  storyboard: ['storyboard', 'seedream', 'consistency'],
+  sequential: ['storyboard', 'seedream'],
+  variations: ['storyboard', 'seedream', 'consistency'],
+  series: ['storyboard', 'seedream'],
+  comic: ['storyboard', 'seedream'],
+  narrative: ['storyboard', 'cinematic', 'veo'],
+  multiple: ['storyboard', 'seedream', 'consistency'],
+  'multi-image': ['storyboard', 'seedream', 'consistency'],
 }
 
 interface SkillsContextValue {
@@ -215,6 +316,11 @@ interface SkillsContextValue {
   // For chat integration
   parseSkillReferences: (text: string) => { text: string; skills: Skill[] }
   getSkillsContext: () => string  // Returns formatted skills for system prompt
+  // Skill Packs
+  skillPacks: SkillPack[]
+  activateSkillPack: (packId: string) => void
+  deactivateSkillPack: (packId: string) => void
+  isPackActive: (packId: string) => boolean
 }
 
 const SkillsContext = createContext<SkillsContextValue | null>(null)
@@ -399,6 +505,44 @@ export function SkillsProvider({ children }: { children: ReactNode }) {
     return context
   }, [state.skills])
 
+  // Skill Pack Functions
+  const activateSkillPack = useCallback((packId: string) => {
+    const pack = getSkillPackById(packId)
+    if (!pack) return
+
+    // Enable all skills in the pack
+    for (const shortcut of pack.skills) {
+      const skill = state.skills.find(s => s.shortcut === shortcut)
+      if (skill && !skill.isActive) {
+        dispatch({ type: 'TOGGLE_SKILL', payload: skill.id })
+      }
+    }
+  }, [state.skills])
+
+  const deactivateSkillPack = useCallback((packId: string) => {
+    const pack = getSkillPackById(packId)
+    if (!pack) return
+
+    // Disable all skills in the pack
+    for (const shortcut of pack.skills) {
+      const skill = state.skills.find(s => s.shortcut === shortcut)
+      if (skill && skill.isActive) {
+        dispatch({ type: 'TOGGLE_SKILL', payload: skill.id })
+      }
+    }
+  }, [state.skills])
+
+  const isPackActive = useCallback((packId: string): boolean => {
+    const pack = getSkillPackById(packId)
+    if (!pack) return false
+
+    // A pack is active if ALL its skills are active
+    return pack.skills.every(shortcut => {
+      const skill = state.skills.find(s => s.shortcut === shortcut)
+      return skill?.isActive ?? false
+    })
+  }, [state.skills])
+
   const value: SkillsContextValue = {
     state,
     addSkill,
@@ -415,6 +559,10 @@ export function SkillsProvider({ children }: { children: ReactNode }) {
     getSkillExplanation,
     parseSkillReferences,
     getSkillsContext,
+    skillPacks,
+    activateSkillPack,
+    deactivateSkillPack,
+    isPackActive,
   }
 
   return <SkillsContext.Provider value={value}>{children}</SkillsContext.Provider>

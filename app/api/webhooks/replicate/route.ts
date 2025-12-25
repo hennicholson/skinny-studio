@@ -41,18 +41,32 @@ interface ReplicateWebhookPayload {
 }
 
 // Helper to extract URLs from Replicate output
+// Handles various output formats: string URLs, arrays, FileOutput objects
 function extractOutputUrls(output: any): string[] {
   if (!output) return []
 
   // Handle array of URLs or FileOutput objects
   if (Array.isArray(output)) {
-    return output.map(item => {
-      if (typeof item === 'string') return item
-      if (item && typeof item.url === 'function') return item.url()
-      if (item && item.href) return item.href
-      if (item && typeof item.toString === 'function') return item.toString()
-      return String(item)
-    }).filter(url => url && url.startsWith('http'))
+    return output.flatMap(item => {
+      // Direct string URL
+      if (typeof item === 'string' && item.startsWith('http')) {
+        return [item]
+      }
+      // FileOutput object with url property (most common for Replicate)
+      if (item?.url && typeof item.url === 'string') {
+        return [item.url]
+      }
+      // Some formats use href
+      if (item?.href && typeof item.href === 'string') {
+        return [item.href]
+      }
+      // Try toString() as last resort - but check if it gives a valid URL
+      const stringified = String(item)
+      if (stringified.startsWith('http')) {
+        return [stringified]
+      }
+      return []
+    })
   }
 
   // Handle single URL
@@ -61,8 +75,8 @@ function extractOutputUrls(output: any): string[] {
   }
 
   // Handle object with url property
-  if (output && output.url) {
-    return [typeof output.url === 'function' ? output.url() : output.url]
+  if (output?.url && typeof output.url === 'string') {
+    return [output.url]
   }
 
   return []

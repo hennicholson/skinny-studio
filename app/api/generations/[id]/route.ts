@@ -63,18 +63,43 @@ async function saveMediaToStorage(mediaUrl: string, userId?: string): Promise<st
 }
 
 // Extract URLs from Replicate output
+// Handles various output formats: string URLs, arrays, FileOutput objects
 function extractOutputUrls(output: any): string[] {
   if (!output) return []
+
   if (Array.isArray(output)) {
-    return output.map(item => {
-      if (typeof item === 'string') return item
-      if (item && typeof item.url === 'function') return item.url()
-      if (item && item.href) return item.href
-      return String(item)
-    }).filter(url => url && url.startsWith('http'))
+    return output.flatMap(item => {
+      // Direct string URL
+      if (typeof item === 'string' && item.startsWith('http')) {
+        return [item]
+      }
+      // FileOutput object with url property (most common for Replicate)
+      if (item?.url && typeof item.url === 'string') {
+        return [item.url]
+      }
+      // Some formats use href
+      if (item?.href && typeof item.href === 'string') {
+        return [item.href]
+      }
+      // Try toString() as last resort - but check if it gives a valid URL
+      const stringified = String(item)
+      if (stringified.startsWith('http')) {
+        return [stringified]
+      }
+      return []
+    })
   }
-  if (typeof output === 'string' && output.startsWith('http')) return [output]
-  if (output && output.url) return [typeof output.url === 'function' ? output.url() : output.url]
+
+  // Single string URL
+  if (typeof output === 'string' && output.startsWith('http')) {
+    return [output]
+  }
+
+  // Single FileOutput object
+  if (output?.url && typeof output.url === 'string') {
+    return [output.url]
+  }
+
   return []
 }
 
@@ -142,7 +167,40 @@ export async function GET(
             // === BILLING: Check if billing is needed ===
             const existingMetadata = (generation.output_metadata as Record<string, any>) || {}
             if (!existingMetadata.billing_complete && generation.user_id && generation.cost_cents > 0) {
-              console.log('[Generations API] Processing billing for generation:', generation.id)
+              // RACE CONDITION FIX: Check if a transaction already exists for this generation
+              // This prevents double-billing when webhook and polling run simultaneously
+              const { data: existingTx } = await sbAdmin
+                .from('credit_transactions')
+                .select('id')
+                .eq('user_id', generation.whop_user_id)
+                .contains('metadata', { generation_id: generation.id })
+                .maybeSingle()
+
+              if (existingTx) {
+                console.log('[Generations API] Billing already processed by webhook, skipping:', generation.id)
+                // Update the generation to mark billing complete (sync with webhook)
+                await sbAdmin
+                  .from('generations')
+                  .update({
+                    output_metadata: {
+                      ...existingMetadata,
+                      billing_complete: true,
+                      billed_via: 'webhook',
+                    },
+                  })
+                  .eq('id', generation.id)
+              } else {
+                console.log('[Generations API] Processing billing for generation:', generation.id)
+
+              // === SEQUENTIAL GENERATION: Calculate correct cost ===
+              // For Seedream 4.5 sequential generation, multiply base cost by number of images
+              const numImagesGenerated = permanentUrls.length
+              let finalCostCents = generation.cost_cents
+
+              if (generation.model_slug === 'seedream-4.5' && numImagesGenerated > 1) {
+                finalCostCents = generation.cost_cents * numImagesGenerated
+                console.log(`[Generations API] Seedream 4.5 sequential: ${numImagesGenerated} images × ${generation.cost_cents}¢ = ${finalCostCents}¢`)
+              }
 
               // Check for lifetime access
               const { data: userProfile } = await sbAdmin
@@ -157,19 +215,19 @@ export async function GET(
               if (!hasLifetimeAccess) {
                 const { data: deductResult, error: deductError } = await sbAdmin.rpc(
                   'deduct_balance_safely',
-                  { p_user_id: generation.user_id, p_amount: generation.cost_cents }
+                  { p_user_id: generation.user_id, p_amount: finalCostCents }
                 )
                 if (deductError) {
                   console.error('[Generations API] Failed to deduct balance:', deductError)
                 } else if (!deductResult?.success) {
                   console.error('[Generations API] Balance deduction failed:', deductResult?.error)
                 } else {
-                  console.log(`[Generations API] Deducted ${generation.cost_cents} cents. New balance: ${deductResult.new_balance}`)
+                  console.log(`[Generations API] Deducted ${finalCostCents} cents. New balance: ${deductResult.new_balance}`)
                 }
               }
 
-              // Log transaction
-              const effectiveCost = hasLifetimeAccess ? 0 : generation.cost_cents
+              // Log transaction - include generation_id for race condition detection
+              const effectiveCost = hasLifetimeAccess ? 0 : finalCostCents
               const { error: txError } = await sbAdmin.from('credit_transactions').insert({
                 user_id: generation.whop_user_id,
                 type: 'PersonaForge',
@@ -180,10 +238,18 @@ export async function GET(
                 status: 'completed',
                 preview: permanentUrls[0],
                 metadata: {
+                  generation_id: generation.id, // For race condition detection
                   model: generation.model_slug,
                   prompt: generation.prompt,
                   completed_via_polling: true,
                   is_lifetime_user: hasLifetimeAccess,
+                  images_generated: numImagesGenerated,
+                  // Seedream 4.5 sequential pricing breakdown
+                  ...(generation.model_slug === 'seedream-4.5' && numImagesGenerated > 1 && {
+                    sequential_mode: true,
+                    cost_per_image_cents: generation.cost_cents,
+                    total_cost_cents: finalCostCents,
+                  }),
                 },
               })
 
@@ -193,21 +259,28 @@ export async function GET(
                 console.log('[Generations API] Transaction logged successfully')
               }
 
-              // Update generation with billing_complete flag
+              // Update generation with correct cost and billing_complete flag
               await sbAdmin
                 .from('generations')
                 .update({
+                  cost_cents: finalCostCents, // Update to actual charged amount
                   output_metadata: {
-                    images_generated: permanentUrls.length,
+                    images_generated: numImagesGenerated,
                     billing_complete: true,
                     billed_at: new Date().toISOString(),
                     billed_via: 'polling_endpoint',
                     billed_amount_cents: effectiveCost,
+                    // Seedream 4.5 sequential info
+                    ...(generation.model_slug === 'seedream-4.5' && numImagesGenerated > 1 && {
+                      sequential_mode: true,
+                      cost_per_image_cents: generation.cost_cents,
+                    }),
                   },
                 })
                 .eq('id', generation.id)
 
-              console.log(`[Generations API] Billing complete for generation ${generation.id}`)
+              console.log(`[Generations API] Billing complete for generation ${generation.id}: ${finalCostCents}¢`)
+              } // end else (no existing transaction)
             }
 
             // Return updated generation

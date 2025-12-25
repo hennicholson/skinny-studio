@@ -5,7 +5,7 @@ import { isAdmin } from '@/lib/admin'
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: { id: string } }
 ) {
   try {
     const isAuthenticated = await hasWhopAuth()
@@ -20,7 +20,7 @@ export async function GET(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 403 })
     }
 
-    const { id } = await params
+    const { id } = params
 
     const { data: user, error } = await sbAdmin
       .from('user_profiles')
@@ -61,7 +61,7 @@ export async function GET(
 
 export async function PUT(
   request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: { id: string } }
 ) {
   try {
     const isAuthenticated = await hasWhopAuth()
@@ -76,7 +76,7 @@ export async function PUT(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 403 })
     }
 
-    const { id } = await params
+    const { id } = params
     const body = await request.json()
 
     // Only allow updating certain fields

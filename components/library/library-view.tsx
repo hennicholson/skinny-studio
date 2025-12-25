@@ -32,6 +32,8 @@ import { NewFolderDialog } from './new-folder-dialog'
 import { RenameFolderDialog } from './rename-folder-dialog'
 import { ConfirmDialog } from './confirm-dialog'
 import { PullToRefresh } from '@/components/ui/pull-to-refresh'
+import { SavedPromptsView } from './saved-prompts-view'
+import { useSavedPrompts } from '@/lib/context/saved-prompts-context'
 
 // Helper to detect if a URL is a video
 function isVideoUrl(url: string): boolean {
@@ -72,6 +74,9 @@ export function LibraryView() {
     refreshFolders,
     updateFolderCounts,
   } = useFolders()
+
+  // Saved prompts
+  const { prompts: savedPrompts, refreshPrompts } = useSavedPrompts()
 
   // Drag state
   const dragState = useDragState()
@@ -126,8 +131,9 @@ export function LibraryView() {
       recents: allGenerations.filter(g => new Date(g.created_at) > sevenDaysAgo).length,
       images: allGenerations.filter(g => !isVideoGeneration(g)).length,
       videos: allGenerations.filter(g => isVideoGeneration(g)).length,
+      prompts: savedPrompts.length,
     }
-  }, [allGenerations])
+  }, [allGenerations, savedPrompts])
 
   // Get current view data based on smart folder or user folder
   const currentGenerations = useMemo(() => {
@@ -151,6 +157,8 @@ export function LibraryView() {
         return allGenerations.filter(g => !isVideoGeneration(g))
       case 'videos':
         return allGenerations.filter(g => isVideoGeneration(g))
+      case 'prompts':
+        return [] // Prompts are handled separately in SavedPromptsView
       default:
         return allGenerations
     }
@@ -294,6 +302,7 @@ export function LibraryView() {
       case 'recents': return 'Recents'
       case 'images': return 'Images'
       case 'videos': return 'Videos'
+      case 'prompts': return 'Saved Prompts'
       default: return 'Library'
     }
   }, [activeFolder, activeSmartFolder, folders])
@@ -455,6 +464,7 @@ export function LibraryView() {
   const handleRefresh = () => {
     refreshGenerations()
     refreshFolders()
+    refreshPrompts()
   }
 
   const formatDate = (dateStr: string) => {
@@ -589,6 +599,9 @@ export function LibraryView() {
                 Try again
               </button>
             </div>
+          ) : activeSmartFolder === 'prompts' ? (
+            /* Saved Prompts View */
+            <SavedPromptsView searchQuery={searchQuery} />
           ) : filteredGenerations.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-20 text-center animate-fadeIn">
 

@@ -8,6 +8,8 @@ import { SkillsManager } from '@/components/skills/skills-manager'
 import { SpendingLog } from '@/components/settings/spending-log'
 import { GenerationsLog } from '@/components/settings/generations-log'
 import { useUser } from '@/lib/context/user-context'
+import { useApp } from '@/lib/context/app-context'
+import { mockModels } from '@/lib/types'
 import { createSdk } from '@whop/iframe'
 import {
   ORCHESTRATOR_MODELS,
@@ -115,6 +117,7 @@ export function SettingsView({ initialPanel = 'main' }: SettingsViewProps) {
   })
   const [showApiKey, setShowApiKey] = useState(false)
   const [showModelSelector, setShowModelSelector] = useState(false)
+  const [showDefaultModelSelector, setShowDefaultModelSelector] = useState(false)
   const [apiKeySaved, setApiKeySaved] = useState(false)
   const [showSkillsManager, setShowSkillsManager] = useState(false)
 
@@ -136,6 +139,12 @@ export function SettingsView({ initialPanel = 'main' }: SettingsViewProps) {
 
   // Get user data from context
   const { user, whop, profile, balanceDollars, balanceCents, isLoading: userLoading, refreshUser } = useUser()
+
+  // Get app context for default model
+  const { selectedModel, setSelectedModel, models } = useApp()
+
+  // Get the current default model name for display
+  const currentDefaultModel = mockModels.find(m => m.id === selectedModel?.id) || mockModels.find(m => m.id === 'creative-consultant')
 
   // Create the Whop iframe SDK client-side using useMemo to prevent recreation
   // Per Whop docs, pass the appId for proper SDK initialization
@@ -290,7 +299,7 @@ export function SettingsView({ initialPanel = 'main' }: SettingsViewProps) {
     saveApiSettings({ selectedModelId: modelId })
   }
 
-  const selectedModel = ORCHESTRATOR_MODELS.find(m => m.id === settings.selectedModelId) || ORCHESTRATOR_MODELS[2]
+  const selectedOrchestratorModel = ORCHESTRATOR_MODELS.find(m => m.id === settings.selectedModelId) || ORCHESTRATOR_MODELS[2]
 
   // Profile Panel
   if (activePanel === 'profile') {
@@ -651,7 +660,7 @@ export function SettingsView({ initialPanel = 'main' }: SettingsViewProps) {
                   </div>
                   <div className="flex-1">
                     <h4 className="font-medium text-white">Orchestrator Model</h4>
-                    <p className="text-xs text-zinc-500">{selectedModel.name}</p>
+                    <p className="text-xs text-zinc-500">{selectedOrchestratorModel.name}</p>
                   </div>
                   <ChevronRight
                     size={18}
@@ -750,11 +759,148 @@ export function SettingsView({ initialPanel = 'main' }: SettingsViewProps) {
               description="Create and manage custom prompting guides"
               onClick={() => setShowSkillsManager(true)}
             />
-            <SettingsSection
-              icon={<Palette size={18} />}
-              title="Default Generation Model"
-              description="FLUX Schnell"
-            />
+
+            {/* Default Model Selector */}
+            <button
+              onClick={() => setShowDefaultModelSelector(!showDefaultModelSelector)}
+              className="w-full p-4 rounded-xl bg-zinc-900/50 border border-zinc-800 hover:border-zinc-700 text-left transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-zinc-800 text-skinny-yellow">
+                  <Palette size={18} />
+                </div>
+                <div className="flex-1">
+                  <h4 className="font-medium text-white">Default Model</h4>
+                  <p className="text-xs text-zinc-500">{currentDefaultModel?.name || 'Creative Consultant'}</p>
+                </div>
+                <ChevronRight
+                  size={18}
+                  className={cn(
+                    "text-zinc-600 transition-transform",
+                    showDefaultModelSelector && "rotate-90"
+                  )}
+                />
+              </div>
+            </button>
+
+            <AnimatePresence>
+              {showDefaultModelSelector && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  className="overflow-hidden"
+                >
+                  <div className="space-y-2 pt-3">
+                    {/* Chat Models */}
+                    <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-2">Chat & Prompt Building</p>
+                    {mockModels.filter(m => m.category === 'chat').map(model => (
+                      <button
+                        key={model.id}
+                        onClick={() => {
+                          const fullModel = models.find(m => m.id === model.id) || model
+                          setSelectedModel(fullModel)
+                        }}
+                        className={cn(
+                          "w-full p-4 rounded-xl border text-left transition-all",
+                          selectedModel?.id === model.id
+                            ? "bg-skinny-yellow/10 border-skinny-yellow/50"
+                            : "bg-zinc-900/50 border-zinc-800 hover:border-zinc-700"
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex-1">
+                            <h4 className={cn(
+                              "font-medium",
+                              selectedModel?.id === model.id ? "text-skinny-yellow" : "text-white"
+                            )}>
+                              {model.name}
+                            </h4>
+                            <p className="text-xs text-zinc-500 mt-1">{model.description}</p>
+                            <div className="flex flex-wrap gap-1 mt-2">
+                              {model.tags?.slice(0, 3).map(tag => (
+                                <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded bg-white/[0.05] text-zinc-500">
+                                  {tag}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                          {selectedModel?.id === model.id && (
+                            <Check size={18} className="text-skinny-yellow flex-shrink-0" />
+                          )}
+                        </div>
+                      </button>
+                    ))}
+
+                    {/* Image Models */}
+                    <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-2 mt-4">Image Generation</p>
+                    {mockModels.filter(m => m.category === 'image').slice(0, 6).map(model => (
+                      <button
+                        key={model.id}
+                        onClick={() => {
+                          const fullModel = models.find(m => m.id === model.id) || model
+                          setSelectedModel(fullModel)
+                        }}
+                        className={cn(
+                          "w-full p-4 rounded-xl border text-left transition-all",
+                          selectedModel?.id === model.id
+                            ? "bg-skinny-yellow/10 border-skinny-yellow/50"
+                            : "bg-zinc-900/50 border-zinc-800 hover:border-zinc-700"
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex-1">
+                            <h4 className={cn(
+                              "font-medium",
+                              selectedModel?.id === model.id ? "text-skinny-yellow" : "text-white"
+                            )}>
+                              {model.name}
+                            </h4>
+                            <p className="text-xs text-zinc-500 mt-1 line-clamp-1">{model.description}</p>
+                          </div>
+                          {selectedModel?.id === model.id && (
+                            <Check size={18} className="text-skinny-yellow flex-shrink-0" />
+                          )}
+                        </div>
+                      </button>
+                    ))}
+
+                    {/* Video Models */}
+                    <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-2 mt-4">Video Generation</p>
+                    {mockModels.filter(m => m.category === 'video').slice(0, 4).map(model => (
+                      <button
+                        key={model.id}
+                        onClick={() => {
+                          const fullModel = models.find(m => m.id === model.id) || model
+                          setSelectedModel(fullModel)
+                        }}
+                        className={cn(
+                          "w-full p-4 rounded-xl border text-left transition-all",
+                          selectedModel?.id === model.id
+                            ? "bg-skinny-yellow/10 border-skinny-yellow/50"
+                            : "bg-zinc-900/50 border-zinc-800 hover:border-zinc-700"
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex-1">
+                            <h4 className={cn(
+                              "font-medium",
+                              selectedModel?.id === model.id ? "text-skinny-yellow" : "text-white"
+                            )}>
+                              {model.name}
+                            </h4>
+                            <p className="text-xs text-zinc-500 mt-1 line-clamp-1">{model.description}</p>
+                          </div>
+                          {selectedModel?.id === model.id && (
+                            <Check size={18} className="text-skinny-yellow flex-shrink-0" />
+                          )}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         </motion.div>
 

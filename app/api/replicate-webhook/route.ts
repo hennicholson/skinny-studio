@@ -6,19 +6,48 @@ import crypto from 'crypto'
 export const runtime = 'nodejs'
 
 // Verify Replicate webhook signature (HMAC-SHA256)
-function verifyReplicateSignature(body: string, signature: string | null, secret: string): boolean {
-  if (!secret || !signature) return false
+// Docs: https://replicate.com/docs/topics/webhooks/signing
+function verifyReplicateSignature(
+  body: string,
+  webhookId: string | null,
+  webhookTimestamp: string | null,
+  webhookSignature: string | null,
+  secret: string
+): boolean {
+  if (!secret || !webhookId || !webhookTimestamp || !webhookSignature) return false
 
   try {
-    const hmac = crypto.createHmac('sha256', secret)
-    hmac.update(body)
-    const expected = 'sha256=' + hmac.digest('hex')
+    // Construct signed content: id.timestamp.body
+    const signedContent = `${webhookId}.${webhookTimestamp}.${body}`
 
-    return crypto.timingSafeEqual(
-      Buffer.from(signature),
-      Buffer.from(expected)
-    )
-  } catch {
+    // Extract base64 key from secret (remove 'whsec_' prefix if present)
+    const secretKey = secret.startsWith('whsec_') ? secret.slice(6) : secret
+
+    // Compute expected signature
+    const hmac = crypto.createHmac('sha256', Buffer.from(secretKey, 'base64'))
+    hmac.update(signedContent)
+    const expectedSignature = hmac.digest('base64')
+
+    // Parse signatures from header (format: "v1,signature1 v1,signature2")
+    const signatures = webhookSignature.split(' ')
+    for (const sig of signatures) {
+      const [version, signatureValue] = sig.split(',')
+      if (version === 'v1' && signatureValue) {
+        try {
+          if (crypto.timingSafeEqual(
+            Buffer.from(signatureValue),
+            Buffer.from(expectedSignature)
+          )) {
+            return true
+          }
+        } catch {
+          // Length mismatch, continue to next signature
+        }
+      }
+    }
+    return false
+  } catch (err) {
+    console.error('[Webhook] Signature verification error:', err)
     return false
   }
 }
@@ -98,27 +127,49 @@ async function saveMediaToStorage(mediaUrl: string, userId?: string): Promise<st
 }
 
 // Extract URLs from Replicate output
+// Handles various output formats: string URLs, arrays, FileOutput objects
 function extractOutputUrls(output: any): string[] {
   if (!output) return []
 
+  console.log('[Webhook] extractOutputUrls input type:', typeof output, Array.isArray(output) ? `array[${output.length}]` : '')
+
   if (Array.isArray(output)) {
-    return output.map(item => {
-      if (typeof item === 'string') return item
-      if (item && typeof item.url === 'function') return item.url()
-      if (item && item.href) return item.href
-      if (item && typeof item.toString === 'function') return item.toString()
-      return String(item)
-    }).filter(url => url && url.startsWith('http'))
+    const urls = output.flatMap(item => {
+      // Direct string URL
+      if (typeof item === 'string' && item.startsWith('http')) {
+        return [item]
+      }
+      // FileOutput object with url property (most common for Replicate)
+      if (item?.url && typeof item.url === 'string') {
+        return [item.url]
+      }
+      // Some formats use href
+      if (item?.href && typeof item.href === 'string') {
+        return [item.href]
+      }
+      // Try toString() as last resort - but check if it gives a valid URL
+      const stringified = String(item)
+      if (stringified.startsWith('http')) {
+        return [stringified]
+      }
+      console.log('[Webhook] Could not extract URL from item:', typeof item, item)
+      return []
+    })
+    console.log('[Webhook] Extracted', urls.length, 'URLs from array')
+    return urls
   }
 
+  // Single string URL
   if (typeof output === 'string' && output.startsWith('http')) {
     return [output]
   }
 
-  if (output && output.url) {
-    return [typeof output.url === 'function' ? output.url() : output.url]
+  // Single FileOutput object
+  if (output?.url && typeof output.url === 'string') {
+    return [output.url]
   }
 
+  console.log('[Webhook] Could not extract URLs from output:', typeof output)
   return []
 }
 
@@ -127,16 +178,28 @@ export async function POST(request: Request) {
   try {
     // Read body as text first for signature verification
     const bodyText = await request.text()
-    const signature = request.headers.get('webhook-signature') ||
-                      request.headers.get('x-replicate-signature')
+
+    // Get webhook signature headers (per Replicate docs)
+    const webhookId = request.headers.get('webhook-id')
+    const webhookTimestamp = request.headers.get('webhook-timestamp')
+    const webhookSignature = request.headers.get('webhook-signature')
     const secret = process.env.REPLICATE_WEBHOOK_SECRET
+
+    console.log('[Webhook] Received request:', {
+      hasWebhookId: !!webhookId,
+      hasTimestamp: !!webhookTimestamp,
+      hasSignature: !!webhookSignature,
+      hasSecret: !!secret,
+      bodyLength: bodyText.length,
+    })
 
     // Verify signature if secret is configured (fail closed)
     if (secret) {
-      if (!verifyReplicateSignature(bodyText, signature, secret)) {
-        console.error('[Webhook] Invalid Replicate signature')
+      if (!verifyReplicateSignature(bodyText, webhookId, webhookTimestamp, webhookSignature, secret)) {
+        console.error('[Webhook] Invalid Replicate signature - verification failed')
         return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
       }
+      console.log('[Webhook] Signature verified successfully')
     }
 
     const body = JSON.parse(bodyText)
@@ -158,17 +221,39 @@ export async function POST(request: Request) {
     }
 
     // Find the generation by prediction ID (include all billing-related fields)
-    const { data: generation, error: fetchError } = await sbAdmin
-      .from('generations')
-      .select('id, whop_user_id, user_id, model_slug, model_category, prompt, cost_cents, replicate_status, output_metadata')
-      .eq('replicate_prediction_id', predictionId)
-      .maybeSingle()
+    let generation = null
+    let fetchError = null
+
+    // Try to find the generation - may need retry due to race condition
+    // (webhook can arrive before generate route saves the prediction ID)
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const result = await sbAdmin
+        .from('generations')
+        .select('id, whop_user_id, user_id, model_slug, model_category, prompt, cost_cents, replicate_status, output_metadata')
+        .eq('replicate_prediction_id', predictionId)
+        .maybeSingle()
+
+      generation = result.data
+      fetchError = result.error
+
+      if (generation || fetchError) {
+        break
+      }
+
+      // Wait before retry (race condition - prediction ID might not be saved yet)
+      if (attempt < 3) {
+        console.log(`[Webhook] Generation not found, retrying in 2s (attempt ${attempt}/3)`)
+        await new Promise(resolve => setTimeout(resolve, 2000))
+      }
+    }
 
     if (fetchError || !generation) {
-      console.log('[Webhook] No generation found for prediction:', predictionId)
+      console.log('[Webhook] No generation found for prediction after retries:', predictionId)
       // Not an error - might be a prediction we didn't create
       return NextResponse.json({ ok: true, message: 'No matching generation' })
     }
+
+    console.log('[Webhook] Found generation:', generation.id, 'model:', generation.model_slug)
 
     // Check existing metadata for billing status
     const existingMetadata = generation.output_metadata as Record<string, any> || {}
@@ -241,15 +326,23 @@ export async function POST(request: Request) {
           metadata: { model: generation.model_slug, recovery_billing: true },
         })
 
-        // Mark billing complete
+        // Mark billing complete and update cost_cents to final amount
         await sbAdmin
           .from('generations')
           .update({
+            cost_cents: finalCostCents, // Update to actual charged amount
             output_metadata: {
               ...existingMetadata,
+              images_generated: numImagesGenerated,
               billing_complete: true,
               billed_at: new Date().toISOString(),
               billed_via: 'webhook_recovery',
+              billed_amount_cents: effectiveCost,
+              // Seedream 4.5 sequential info
+              ...(generation.model_slug === 'seedream-4.5' && numImagesGenerated > 1 && {
+                sequential_mode: true,
+                cost_per_image_cents: generation.cost_cents,
+              }),
             },
           })
           .eq('id', generation.id)
@@ -313,79 +406,98 @@ export async function POST(request: Request) {
 
       // === BILLING: Deduct balance and log transaction ===
       if (generation.user_id && finalCostCents > 0) {
-        // Get user profile to check for lifetime access
-        const { data: userProfile } = await sbAdmin
-          .from('user_profiles')
-          .select('id, lifetime_access, balance_cents')
-          .eq('id', generation.user_id)
-          .single()
+        // RACE CONDITION FIX: Check if a transaction already exists for this generation
+        // This prevents double-billing when webhook and polling run simultaneously
+        const { data: existingTx } = await sbAdmin
+          .from('credit_transactions')
+          .select('id')
+          .eq('user_id', generation.whop_user_id)
+          .contains('metadata', { generation_id: generation.id })
+          .maybeSingle()
 
-        const hasLifetimeAccess = userProfile?.lifetime_access || false
-
-        // Deduct balance if not a lifetime user
-        if (!hasLifetimeAccess) {
-          const { data: deductResult, error: deductError } = await sbAdmin.rpc(
-            'deduct_balance_safely',
-            {
-              p_user_id: generation.user_id,
-              p_amount: finalCostCents
-            }
-          )
-
-          if (deductError) {
-            console.error('[Webhook] Failed to deduct balance:', deductError)
-          } else if (!deductResult?.success) {
-            console.error('[Webhook] Balance deduction failed:', deductResult?.error)
-          } else {
-            console.log('[Webhook] Successfully deducted', finalCostCents, 'cents. New balance:', deductResult.new_balance)
-          }
-        }
-
-        // Log the transaction
-        const effectiveCost = hasLifetimeAccess ? 0 : finalCostCents
-        const amountInDollars = effectiveCost / 100
-
-        const { error: txError } = await sbAdmin.from('credit_transactions').insert({
-          user_id: generation.whop_user_id,
-          type: 'PersonaForge',  // Use PersonaForge type to avoid app_id constraint
-          amount: -amountInDollars,
-          amount_charged: amountInDollars,
-          app_name: 'Skinny Studio',
-          task: generation.model_category === 'video' ? 'Video Generation' : 'Image Generation',
-          status: 'completed',
-          preview: permanentUrls[0],
-          metadata: {
-            model: generation.model_slug,
-            prompt: generation.prompt,
-            category: generation.model_category,
-            is_lifetime_user: hasLifetimeAccess,
-            images_generated: numImagesGenerated,
-            completed_via_webhook: true,
-          },
-        })
-
-        if (txError) {
-          console.error('[Webhook] Failed to log transaction:', txError)
+        if (existingTx) {
+          console.log('[Webhook] Billing already processed by polling, skipping:', generation.id)
         } else {
-          console.log('[Webhook] Successfully logged transaction')
-        }
+          // Get user profile to check for lifetime access
+          const { data: userProfile } = await sbAdmin
+            .from('user_profiles')
+            .select('id, lifetime_access, balance_cents')
+            .eq('id', generation.user_id)
+            .single()
 
-        // === MARK BILLING AS COMPLETE ===
-        // This prevents duplicate billing if webhook is called again
-        await sbAdmin
-          .from('generations')
-          .update({
-            output_metadata: {
+          const hasLifetimeAccess = userProfile?.lifetime_access || false
+
+          // Deduct balance if not a lifetime user
+          if (!hasLifetimeAccess) {
+            const { data: deductResult, error: deductError } = await sbAdmin.rpc(
+              'deduct_balance_safely',
+              {
+                p_user_id: generation.user_id,
+                p_amount: finalCostCents
+              }
+            )
+
+            if (deductError) {
+              console.error('[Webhook] Failed to deduct balance:', deductError)
+            } else if (!deductResult?.success) {
+              console.error('[Webhook] Balance deduction failed:', deductResult?.error)
+            } else {
+              console.log('[Webhook] Successfully deducted', finalCostCents, 'cents. New balance:', deductResult.new_balance)
+            }
+          }
+
+          // Log the transaction - include generation_id for race condition detection
+          const effectiveCost = hasLifetimeAccess ? 0 : finalCostCents
+          const amountInDollars = effectiveCost / 100
+
+          const { error: txError } = await sbAdmin.from('credit_transactions').insert({
+            user_id: generation.whop_user_id,
+            type: 'PersonaForge',  // Use PersonaForge type to avoid app_id constraint
+            amount: -amountInDollars,
+            amount_charged: amountInDollars,
+            app_name: 'Skinny Studio',
+            task: generation.model_category === 'video' ? 'Video Generation' : 'Image Generation',
+            status: 'completed',
+            preview: permanentUrls[0],
+            metadata: {
+              generation_id: generation.id, // For race condition detection
+              model: generation.model_slug,
+              prompt: generation.prompt,
+              category: generation.model_category,
+              is_lifetime_user: hasLifetimeAccess,
               images_generated: numImagesGenerated,
               completed_via_webhook: true,
-              billing_complete: true,
-              billed_at: new Date().toISOString(),
-              billed_amount_cents: hasLifetimeAccess ? 0 : finalCostCents,
             },
           })
-          .eq('id', generation.id)
 
-        console.log('[Webhook] Marked billing as complete for generation:', generation.id)
+          if (txError) {
+            console.error('[Webhook] Failed to log transaction:', txError)
+          } else {
+            console.log('[Webhook] Successfully logged transaction')
+          }
+
+          // === MARK BILLING AS COMPLETE ===
+          // This prevents duplicate billing if webhook is called again
+          await sbAdmin
+            .from('generations')
+            .update({
+              output_metadata: {
+                images_generated: numImagesGenerated,
+                completed_via_webhook: true,
+                billing_complete: true,
+                billed_at: new Date().toISOString(),
+                billed_amount_cents: hasLifetimeAccess ? 0 : finalCostCents,
+                // Seedream 4.5 sequential info
+                ...(generation.model_slug === 'seedream-4.5' && numImagesGenerated > 1 && {
+                  sequential_mode: true,
+                  cost_per_image_cents: generation.cost_cents,
+                }),
+              },
+            })
+            .eq('id', generation.id)
+
+          console.log(`[Webhook] Marked billing as complete for generation ${generation.id}: ${finalCostCents}¢`)
+        } // end else (no existing transaction)
       }
 
     } else if (status === 'failed' || status === 'canceled') {

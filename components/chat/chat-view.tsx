@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import Image from 'next/image'
 import { cn } from '@/lib/utils'
 import { Key, ExternalLink, AlertCircle, X, Camera, Palette, Share2, Play } from 'lucide-react'
-import { useChat, SkillForApi, SkillCreationData } from '@/lib/context/chat-context'
+import { useChat, SkillForApi, SkillCreationData, ChatAttachment } from '@/lib/context/chat-context'
 import { useSkills } from '@/lib/context/skills-context'
 import { useGeneration } from '@/lib/context/generation-context'
 import { useApp } from '@/lib/context/app-context'
@@ -14,6 +14,10 @@ import { ChatInput } from './chat-input'
 import { hasApiKey } from '@/lib/api-settings'
 import { EtherealBackground } from '@/components/ui/ethereal-background'
 import { StoryboardView } from '@/components/storyboard/storyboard-view'
+import { SessionView } from '@/components/sessions/session-view'
+import { SessionPickerModal } from '@/components/sessions/session-picker-modal'
+import { useSessions } from '@/lib/context/sessions-context'
+import { SkinnyBrief, SkinnyBriefData, formatBriefForPrompt } from './skinny-brief'
 import { toast } from 'sonner'
 
 // Welcome suggestions - no emojis, use icons instead
@@ -165,18 +169,41 @@ function WelcomeScreen({ onSuggestionClick }: { onSuggestionClick: (prompt: stri
 
 export function ChatView() {
   const { state, sendMessage, clearError, setOnSkillCreation, setOnGenerationComplete, setOnInsufficientBalance, platformEnabled } = useChat()
-  const { messages, isLoading, error, errorCode } = state
+  const { messages, isLoading, error, errorCode, currentConversationId } = state
   const { parseSkillReferences, addSkill } = useSkills()
   const { refreshGenerations } = useGeneration()
-  const { showInsufficientBalance, selectedModel } = useApp()
+  const { showInsufficientBalance, selectedModel, setSelectedModel, models } = useApp()
+  const { currentSession, loadSession, clearCurrentSession } = useSessions()
 
   // Check if storyboard mode is selected
   const isStoryboardMode = selectedModel?.id === 'storyboard-mode'
+  // Check if session mode is selected
+  const isSessionMode = selectedModel?.id === 'session-mode'
 
-  // If storyboard mode, render the StoryboardView instead
-  if (isStoryboardMode) {
-    return <StoryboardView />
-  }
+  // Session picker modal state
+  const [showSessionPicker, setShowSessionPicker] = useState(false)
+
+  // Get default model for reset
+  const defaultModel = models.find(m => m.id === 'creative-consultant') || models[0]
+
+  // ALL HOOKS MUST BE CALLED BEFORE ANY EARLY RETURNS
+  const [showApiKeyBanner, setShowApiKeyBanner] = useState(false)
+  const [creativeBrief, setCreativeBrief] = useState<SkinnyBriefData | null>(null)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const messagesContainerRef = useRef<HTMLDivElement>(null)
+
+  // Handle session mode - show picker if no current session, otherwise show session view
+  useEffect(() => {
+    if (isSessionMode && !currentSession) {
+      setShowSessionPicker(true)
+    }
+  }, [isSessionMode, currentSession])
+
+  // Handle exiting session mode
+  const handleExitSession = useCallback(() => {
+    clearCurrentSession()
+    setSelectedModel(defaultModel)
+  }, [clearCurrentSession, setSelectedModel, defaultModel])
 
   // Wire up skill creation callback - when AI creates a skill, add it to the skills library
   useEffect(() => {
@@ -243,10 +270,6 @@ export function ChatView() {
     }
   }, [showInsufficientBalance, setOnInsufficientBalance])
 
-  const [showApiKeyBanner, setShowApiKeyBanner] = useState(false)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
-  const messagesContainerRef = useRef<HTMLDivElement>(null)
-
   // Check for API key on mount - don't show banner if platform mode is enabled
   useEffect(() => {
     setShowApiKeyBanner(!hasApiKey() && !platformEnabled)
@@ -274,9 +297,13 @@ export function ChatView() {
       content: s.content,
     }))
 
+    // Format creative brief if present and prepend to system context
+    const briefContext = formatBriefForPrompt(creativeBrief)
+
     // Don't preload all skills - only pass explicitly referenced skills (via @ mentions)
-    sendMessage(content, attachments, undefined, skillsForApi.length > 0 ? skillsForApi : undefined, selectedGenerationModelId)
-  }, [sendMessage, parseSkillReferences])
+    // Brief is passed as part of skills context (prepended to skills)
+    sendMessage(content, attachments, briefContext || undefined, skillsForApi.length > 0 ? skillsForApi : undefined, selectedGenerationModelId)
+  }, [sendMessage, parseSkillReferences, creativeBrief])
 
   const handleSuggestionClick = useCallback((prompt: string) => {
     // Don't preload skills for suggestions - user must explicitly mention with @
@@ -284,9 +311,10 @@ export function ChatView() {
   }, [sendMessage])
 
   // Quick action handlers for confirmation messages
-  const handleQuickGenerate = useCallback(() => {
-    // Send a confirmation message to trigger generation
-    sendMessage('Yes, generate it!', undefined, undefined)
+  // Accept attachments to pass along with the confirmation message
+  const handleQuickGenerate = useCallback((attachmentsToUse?: ChatAttachment[]) => {
+    // Send a confirmation message to trigger generation WITH the reference images
+    sendMessage('Yes, generate it!', attachmentsToUse, undefined)
   }, [sendMessage])
 
   const handleEditPrompt = useCallback(() => {
@@ -323,6 +351,46 @@ export function ChatView() {
   // Show API key banner if error is about missing key
   const showKeyError = errorCode === 'NO_API_KEY' || errorCode === 'INVALID_API_KEY'
 
+  // EARLY RETURNS AFTER ALL HOOKS ARE CALLED
+  // If storyboard mode, render the StoryboardView instead
+  if (isStoryboardMode) {
+    return <StoryboardView />
+  }
+
+  // If session mode with active session, render SessionView
+  if (isSessionMode && currentSession) {
+    return (
+      <>
+        <SessionView onBack={handleExitSession} />
+        <SessionPickerModal
+          isOpen={showSessionPicker}
+          onClose={() => setShowSessionPicker(false)}
+          onCreateSession={() => {
+            // createSession already sets currentSession, no need to call loadSession
+            setShowSessionPicker(false)
+          }}
+        />
+      </>
+    )
+  }
+
+  // If session mode without active session, show picker
+  if (isSessionMode && !currentSession) {
+    return (
+      <SessionPickerModal
+        isOpen={true}
+        onClose={() => {
+          setShowSessionPicker(false)
+          setSelectedModel(defaultModel) // Exit session mode if picker is closed
+        }}
+        onCreateSession={() => {
+          // createSession already sets currentSession, no need to call loadSession
+          setShowSessionPicker(false)
+        }}
+      />
+    )
+  }
+
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-black relative min-h-0">
       {/* Ethereal Background - only on welcome screen */}
@@ -358,15 +426,33 @@ export function ChatView() {
               animate={{ opacity: 1 }}
               className="max-w-3xl mx-auto pt-6 px-4 pb-40"
             >
-              {messages.map((message, index) => (
-                <ChatMessage
-                  key={message.id}
-                  message={message}
-                  onQuickGenerate={handleQuickGenerate}
-                  onEditPrompt={handleEditPrompt}
-                  showQuickActions={index === lastConfirmationIndex && !isLoading}
-                />
-              ))}
+              {messages.map((message, index) => {
+                // For confirmation messages, find the last user message's attachments to show as pending references
+                const isConfirmationMsg = index === lastConfirmationIndex && !isLoading
+                let pendingAttachments: ChatAttachment[] | undefined
+                if (isConfirmationMsg && message.role === 'assistant') {
+                  // Find the most recent user message before this one
+                  for (let i = index - 1; i >= 0; i--) {
+                    if (messages[i].role === 'user' && messages[i].attachments?.length) {
+                      // Preserve FULL ChatAttachment objects (not just url/name) so we can pass them to sendMessage
+                      pendingAttachments = messages[i].attachments?.filter(
+                        a => (a.type === 'image' || a.type === 'reference') && (a.url || a.base64)
+                      )
+                      break
+                    }
+                  }
+                }
+                return (
+                  <ChatMessage
+                    key={message.id}
+                    message={message}
+                    onQuickGenerate={(attachments) => handleQuickGenerate(attachments)}
+                    onEditPrompt={handleEditPrompt}
+                    showQuickActions={isConfirmationMsg}
+                    pendingReferenceImages={pendingAttachments}
+                  />
+                )
+              })}
 
               <div ref={messagesEndRef} />
             </motion.div>
@@ -387,10 +473,18 @@ export function ChatView() {
 
       {/* Input Area - floating over background */}
       <div className="relative z-20 flex-shrink-0">
+        {/* Skinny Brief - Quick creative context */}
+        <div className="max-w-2xl mx-auto px-4 pb-2">
+          <SkinnyBrief
+            brief={creativeBrief}
+            onBriefChange={setCreativeBrief}
+          />
+        </div>
         <ChatInput
           onSend={handleSend}
           isLoading={isLoading}
           placeholder={hasMessages ? "Continue the conversation..." : "What would you like to create?"}
+          contextId={currentConversationId}
         />
       </div>
     </div>

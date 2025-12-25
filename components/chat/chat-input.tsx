@@ -3,21 +3,25 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { cn } from '@/lib/utils'
-import { Loader2, Image as ImageIcon, X, ImageOff, Wand2, ChevronDown, SendIcon, Paperclip, Zap, MessageSquare } from 'lucide-react'
+import { Loader2, Image as ImageIcon, X, ImageOff, Wand2, ChevronDown, SendIcon, Paperclip, Zap, MessageSquare, Sparkles } from 'lucide-react'
 import { ChatAttachment, ImagePurpose, IMAGE_PURPOSE_LABELS } from '@/lib/context/chat-context'
 import { validateImage, createThumbnailUrl, revokeThumbnailUrl } from '@/lib/image-utils'
 import { selectedModelSupportsVision, getSelectedModel } from '@/lib/api-settings'
 import { ModelSelector } from '@/components/ui/model-selector'
 import { ImageSourcePicker } from './image-source-picker'
 import { ImagePurposeModal } from './image-purpose-modal'
+import { AnalysisPreviewModal } from './analysis-preview-modal'
 import { useApp } from '@/lib/context/app-context'
-import { useSkills } from '@/lib/context/skills-context'
+import { useSkills, INTENT_SKILL_MAP } from '@/lib/context/skills-context'
 import { Skill } from '@/lib/types'
+import { SkillSuggestions, extractIntentKeywords } from './skill-suggestions'
 
 interface ChatInputProps {
   onSend: (content: string, attachments?: ChatAttachment[], selectedGenerationModelId?: string) => void
   isLoading?: boolean
   placeholder?: string
+  /** Pass conversationId/sessionId to clear attachments on switch */
+  contextId?: string | null
 }
 
 const MAX_IMAGES = 4
@@ -27,6 +31,7 @@ export function ChatInput({
   onSend,
   isLoading = false,
   placeholder = "Chat with your creative AI...",
+  contextId,
 }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [attachments, setAttachments] = useState<ChatAttachment[]>([])
@@ -39,17 +44,26 @@ export function ChatInput({
   const [showPurposeModal, setShowPurposeModal] = useState(false)
   const [pendingAttachment, setPendingAttachment] = useState<ChatAttachment | null>(null)
 
-  // Skill suggestions state
+  // Image analysis state
+  const [showAnalysisModal, setShowAnalysisModal] = useState(false)
+  const [analysisText, setAnalysisText] = useState('')
+  const [isAnalyzing, setIsAnalyzing] = useState(false)
+
+  // Skill suggestions state (for @ autocomplete)
   const [showSkillSuggestions, setShowSkillSuggestions] = useState(false)
   const [skillQuery, setSkillQuery] = useState('')
   const [selectedSkillIndex, setSelectedSkillIndex] = useState(0)
   const [cursorPosition, setCursorPosition] = useState(0)
 
+  // Proactive skill suggestions state (based on intent detection)
+  const [proactiveSuggestions, setProactiveSuggestions] = useState<Skill[]>([])
+  const [dismissedSuggestions, setDismissedSuggestions] = useState(false)
+
   // Get generation models from app context
   const { models, selectedModel, setSelectedModel, recentModels } = useApp()
 
   // Get skills context
-  const { state: skillsState, searchSkills, getActiveSkills } = useSkills()
+  const { state: skillsState, searchSkills, getActiveSkills, getSkillsByIntent } = useSkills()
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -62,6 +76,18 @@ export function ChatInput({
     window.addEventListener('focus', handleFocus)
     return () => window.removeEventListener('focus', handleFocus)
   }, [])
+
+  // Clear attachments when switching conversations/sessions to prevent stale references
+  useEffect(() => {
+    // Don't clear on initial mount (when contextId is first set)
+    if (contextId !== undefined) {
+      setAttachments(prev => {
+        // Revoke URLs to free memory
+        prev.forEach(a => revokeThumbnailUrl(a.url))
+        return []
+      })
+    }
+  }, [contextId])
 
   // Auto-resize textarea
   useEffect(() => {
@@ -76,6 +102,87 @@ export function ChatInput({
     return () => {
       attachments.forEach(a => revokeThumbnailUrl(a.url))
     }
+  }, [])
+
+  // Proactive skill suggestions based on intent detection (debounced)
+  useEffect(() => {
+    // Skip if user dismissed or if already showing @ autocomplete
+    if (dismissedSuggestions || showSkillSuggestions) {
+      setProactiveSuggestions([])
+      return
+    }
+
+    // Skip if input is too short
+    if (value.length < 10) {
+      setProactiveSuggestions([])
+      return
+    }
+
+    // Check if user already has @mentions (they know about skills)
+    if (value.includes('@')) {
+      setProactiveSuggestions([])
+      return
+    }
+
+    // Debounce the detection
+    const timer = setTimeout(() => {
+      const keywords = extractIntentKeywords(value)
+
+      // Find matching skills for detected intents
+      const matchedSkills = new Map<string, Skill>()
+
+      for (const keyword of keywords) {
+        // Check if keyword matches any intent in the map
+        if (INTENT_SKILL_MAP[keyword]) {
+          const skills = getSkillsByIntent(keyword)
+          for (const skill of skills) {
+            if (!matchedSkills.has(skill.id)) {
+              matchedSkills.set(skill.id, skill)
+            }
+          }
+        }
+      }
+
+      // Convert to array and limit to top 4
+      const suggestions = Array.from(matchedSkills.values()).slice(0, 4)
+      setProactiveSuggestions(suggestions)
+    }, 400)
+
+    return () => clearTimeout(timer)
+  }, [value, dismissedSuggestions, showSkillSuggestions, getSkillsByIntent])
+
+  // Reset dismissed state when input changes significantly
+  useEffect(() => {
+    if (value.length < 5) {
+      setDismissedSuggestions(false)
+    }
+  }, [value])
+
+  // Handle inserting proactive skill suggestion
+  const insertProactiveSkill = useCallback((skill: Skill) => {
+    // Add the @shortcut to the beginning or end of the current text
+    const newText = value.trim()
+      ? `@${skill.shortcut} ${value}`
+      : `@${skill.shortcut} `
+
+    setValue(newText)
+    setProactiveSuggestions([])
+    setDismissedSuggestions(true)
+
+    // Focus textarea
+    setTimeout(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus()
+        const newPos = newText.length
+        textareaRef.current.setSelectionRange(newPos, newPos)
+      }
+    }, 0)
+  }, [value])
+
+  // Dismiss proactive suggestions
+  const dismissProactiveSuggestions = useCallback(() => {
+    setProactiveSuggestions([])
+    setDismissedSuggestions(true)
   }, [])
 
   // Handle clipboard paste for images
@@ -284,14 +391,110 @@ export function ChatInput({
     e.target.value = ''
   }
 
+  // Analyze image with Gemini
+  const analyzeImage = useCallback(async (attachment: ChatAttachment) => {
+    setIsAnalyzing(true)
+    setAnalysisText('')
+
+    try {
+      // Build request body
+      const body: Record<string, any> = {
+        purpose: 'analyze',
+      }
+
+      // If we have a file, convert to base64
+      if (attachment.file) {
+        const reader = new FileReader()
+        const base64Promise = new Promise<string>((resolve, reject) => {
+          reader.onload = () => {
+            const result = reader.result as string
+            const base64 = result.split(',')[1]
+            resolve(base64)
+          }
+          reader.onerror = reject
+        })
+        reader.readAsDataURL(attachment.file)
+        body.base64 = await base64Promise
+        body.mimeType = attachment.file.type
+      } else {
+        body.imageUrl = attachment.url
+      }
+
+      // Get auth headers from localStorage
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (typeof window !== 'undefined') {
+        const devToken = localStorage.getItem('whop-dev-token')
+        const devUserId = localStorage.getItem('whop-dev-user-id')
+        if (devToken) headers['x-whop-user-token'] = devToken
+        if (devUserId) headers['x-whop-user-id'] = devUserId
+      }
+
+      const response = await fetch('/api/analyze-image', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      })
+
+      if (!response.ok) {
+        throw new Error('Analysis failed')
+      }
+
+      const data = await response.json()
+      setAnalysisText(data.analysis || 'No analysis generated.')
+    } catch (error) {
+      console.error('Image analysis error:', error)
+      setAnalysisText('Failed to analyze image. Please try again.')
+    } finally {
+      setIsAnalyzing(false)
+    }
+  }, [])
+
   // Handle purpose selection from modal
-  const handlePurposeSelected = (purpose: ImagePurpose) => {
-    if (pendingAttachment) {
+  const handlePurposeSelected = useCallback((purpose: ImagePurpose) => {
+    if (!pendingAttachment) return
+
+    if (purpose === 'analyze') {
+      // Start analysis flow
+      setShowPurposeModal(false)
+      setShowAnalysisModal(true)
+      analyzeImage(pendingAttachment)
+    } else {
+      // Direct attachment without analysis
       setAttachments(prev => [...prev, { ...pendingAttachment, purpose }])
       setPendingAttachment(null)
       setShowPurposeModal(false)
     }
-  }
+  }, [pendingAttachment, analyzeImage])
+
+  // Handle analysis modal confirm (user selects final purpose after analysis)
+  const handleAnalysisConfirm = useCallback((finalPurpose: ImagePurpose) => {
+    if (pendingAttachment) {
+      setAttachments(prev => [...prev, {
+        ...pendingAttachment,
+        purpose: finalPurpose,
+        analysis: analysisText,
+        analysisStatus: 'complete',
+      }])
+      setPendingAttachment(null)
+      setShowAnalysisModal(false)
+      setAnalysisText('')
+    }
+  }, [pendingAttachment, analysisText])
+
+  // Handle re-analyze from analysis modal
+  const handleReanalyze = useCallback(() => {
+    if (pendingAttachment) {
+      analyzeImage(pendingAttachment)
+    }
+  }, [pendingAttachment, analyzeImage])
+
+  // Handle analysis modal close
+  const handleAnalysisModalClose = useCallback(() => {
+    // Go back to purpose modal so user can choose again
+    setShowAnalysisModal(false)
+    setAnalysisText('')
+    setShowPurposeModal(true)
+  }, [])
 
   // Handle closing purpose modal without selection (cancel)
   const handlePurposeModalClose = () => {
@@ -354,7 +557,8 @@ export function ChatInput({
                       </div>
                       {/* Purpose Badge */}
                       {attachment.purpose && (
-                        <span className="absolute bottom-0 left-0 right-0 text-[8px] bg-black/80 text-white/90 px-1 py-0.5 text-center truncate">
+                        <span className="absolute bottom-0 left-0 right-0 text-[8px] bg-black/80 text-white/90 px-1 py-0.5 text-center truncate flex items-center justify-center gap-0.5">
+                          {attachment.analysis && <Sparkles size={8} className="text-cyan-400" />}
                           {IMAGE_PURPOSE_LABELS[attachment.purpose]}
                         </span>
                       )}
@@ -370,6 +574,13 @@ export function ChatInput({
               </motion.div>
             )}
           </AnimatePresence>
+
+          {/* Proactive Skill Suggestions */}
+          <SkillSuggestions
+            suggestedSkills={proactiveSuggestions}
+            onSelectSkill={insertProactiveSkill}
+            onDismiss={dismissProactiveSuggestions}
+          />
 
           {/* Textarea Area */}
           <div className="p-4 relative">
@@ -630,6 +841,18 @@ export function ChatInput({
         onSelect={handlePurposeSelected}
         imageUrl={pendingAttachment?.url || ''}
         imageName={pendingAttachment?.name || ''}
+      />
+
+      {/* Analysis Preview Modal */}
+      <AnalysisPreviewModal
+        isOpen={showAnalysisModal}
+        onClose={handleAnalysisModalClose}
+        onConfirm={handleAnalysisConfirm}
+        onReanalyze={handleReanalyze}
+        imageUrl={pendingAttachment?.url || ''}
+        imageName={pendingAttachment?.name || ''}
+        analysis={analysisText}
+        isLoading={isAnalyzing}
       />
     </div>
   )

@@ -9,7 +9,7 @@ export const runtime = 'nodejs'
 export const maxDuration = 300 // 5 minutes to match generate route
 
 // Image purpose types - must match frontend
-type ImagePurpose = 'reference' | 'starting_frame' | 'edit_target' | 'last_frame'
+type ImagePurpose = 'reference' | 'starting_frame' | 'edit_target' | 'last_frame' | 'analyze'
 
 interface ChatAttachment {
   type: 'image' | 'reference'
@@ -18,6 +18,7 @@ interface ChatAttachment {
   base64?: string
   mimeType?: string
   purpose?: ImagePurpose  // User-selected purpose for the image
+  analysis?: string  // AI-generated image description
 }
 
 interface ChatMessage {
@@ -125,6 +126,42 @@ function parseSkillCreationBlock(text: string): SkillCreationBlock | null {
 // Remove the generation block from text (so it's not shown in chat)
 function stripGenerationBlock(text: string): string {
   return text.replace(/```generate\s*\n[\s\S]*?\n```/g, '').trim()
+}
+
+// Parse director's notes from AI response
+interface DirectorsNotes {
+  modelChoice: string
+  promptEnhancements: string
+  parameterReasoning: string
+  tips: string
+}
+
+function parseDirectorsNotes(text: string): DirectorsNotes | null {
+  const regex = /```directors-notes\s*\n([\s\S]*?)\n```/
+  const match = text.match(regex)
+
+  if (!match) return null
+
+  try {
+    const json = JSON.parse(match[1])
+    if (json.modelChoice || json.promptEnhancements || json.tips) {
+      return {
+        modelChoice: json.modelChoice || '',
+        promptEnhancements: json.promptEnhancements || '',
+        parameterReasoning: json.parameterReasoning || '',
+        tips: json.tips || '',
+      }
+    }
+  } catch (e) {
+    console.error('Failed to parse directors notes:', e)
+  }
+
+  return null
+}
+
+// Strip director's notes from display text
+function stripDirectorsNotes(text: string): string {
+  return text.replace(/```directors-notes\s*\n[\s\S]*?\n```/g, '').trim()
 }
 
 // Storyboard Mode: Parse shot-list blocks from AI response
@@ -286,20 +323,32 @@ export async function POST(request: Request) {
 
     if (isConsultantMode) {
       // Override system prompt for consultant mode - pure brainstorming, no generation
-      systemPrompt += `\n\n## CREATIVE CONSULTANT MODE (Chat Only)\n`
+      systemPrompt += `\n\n## CREATIVE CONSULTANT MODE (Prompt Building)\n`
       systemPrompt += `IMPORTANT: The user has selected "Creative Consultant" mode. This means:\n`
       systemPrompt += `- DO NOT generate any images or videos\n`
       systemPrompt += `- DO NOT use the generate_image or generate_video tools\n`
       systemPrompt += `- DO NOT provide cost estimates or ask to confirm generation\n`
-      systemPrompt += `- Focus ONLY on brainstorming, ideation, and prompt crafting\n\n`
-      systemPrompt += `Your role in this mode:\n`
-      systemPrompt += `1. Help users brainstorm creative ideas and concepts\n`
-      systemPrompt += `2. Craft and refine detailed prompts for future generation\n`
-      systemPrompt += `3. Discuss creative direction, style, composition, and techniques\n`
-      systemPrompt += `4. Explain what different models are good at\n`
-      systemPrompt += `5. Provide artistic feedback and suggestions\n\n`
-      systemPrompt += `When the user is ready to generate, suggest they select an image or video model from the model picker.\n`
-      systemPrompt += `You can say things like "When you're ready to bring this to life, select FLUX Pro or another model to generate!"\n`
+      systemPrompt += `- Focus ONLY on brainstorming, ideation, and PROMPT CRAFTING\n\n`
+      systemPrompt += `## Your Primary Role: Expert Prompt Engineer\n`
+      systemPrompt += `You are an expert prompt engineer helping users craft perfect prompts for ANY AI tool.\n`
+      systemPrompt += `Users may want to use their prompts in Midjourney, DALL-E, Stable Diffusion, RunwayML, or other AI tools.\n\n`
+      systemPrompt += `Your responsibilities:\n`
+      systemPrompt += `1. **Build & Refine Prompts**: Help craft detailed, effective prompts optimized for their target platform\n`
+      systemPrompt += `2. **Use Skills**: When users reference @skills (prompt guides), apply those techniques to enhance their prompts\n`
+      systemPrompt += `3. **Platform-Specific Advice**: Tailor prompts to work best on different AI platforms:\n`
+      systemPrompt += `   - Midjourney: Use --ar, --v, --s, --c parameters and MJ-specific syntax\n`
+      systemPrompt += `   - DALL-E: Natural language descriptions, clear composition\n`
+      systemPrompt += `   - Stable Diffusion: Use weights, (emphasis:1.2), quality tags\n`
+      systemPrompt += `   - Flux: Detailed natural descriptions, style keywords\n`
+      systemPrompt += `4. **Iterate**: Help refine prompts through multiple iterations\n`
+      systemPrompt += `5. **Explain Techniques**: Teach users how different prompt elements affect the output\n\n`
+      systemPrompt += `## Output Format\n`
+      systemPrompt += `When you craft a final prompt, present it clearly in a code block or quoted format so users can easily copy it.\n`
+      systemPrompt += `Remind users they can save their favorite prompts to their Library using the save button!\n\n`
+      systemPrompt += `## When Ready to Generate\n`
+      systemPrompt += `If the user wants to actually generate images in Skinny Studio, suggest they:\n`
+      systemPrompt += `- Select an image or video model from the model picker (like FLUX Pro, Seedream, etc.)\n`
+      systemPrompt += `- Or copy their prompt and use it in their preferred external AI tool\n`
     } else if (selectedGenerationModelId) {
       // Normal generation mode with pre-selected model
       systemPrompt += `\n\n## User's Selected Generation Model\n`
@@ -324,6 +373,7 @@ export async function POST(request: Request) {
       starting_frame: 'STARTING FRAME (first frame for video generation, image-to-video)',
       edit_target: 'EDIT TARGET (image to be modified/edited)',
       last_frame: 'LAST FRAME (end frame for video generation)',
+      analyze: 'ANALYZED IMAGE (with AI-generated content description)',
     }
 
     // Convert messages to Gemini format with image support
@@ -345,10 +395,21 @@ export async function POST(request: Request) {
 
         if (allImageAttachments.length > 0) {
           // Add context text about ALL images (regardless of base64) so AI knows they exist
+          // Include AI analysis when available for smarter prompt crafting
           const imageContexts = allImageAttachments.map((att, i) => {
             const purposeLabel = att.purpose ? PURPOSE_CONTEXT[att.purpose] : 'REFERENCE IMAGE'
-            return `[Image ${i + 1}: ${purposeLabel}]`
-          }).join('\n')
+            let context = `[Image ${i + 1}: ${purposeLabel}]`
+
+            // Include truncated analysis if available (max 500 chars to manage tokens)
+            if (att.analysis) {
+              const truncatedAnalysis = att.analysis.length > 500
+                ? att.analysis.slice(0, 500) + '...'
+                : att.analysis
+              context += `\nAnalysis: ${truncatedAnalysis}`
+            }
+
+            return context
+          }).join('\n\n')
 
           parts.push({ text: `\n\n--- ATTACHED IMAGES ---\n${imageContexts}\n` })
 
@@ -511,44 +572,25 @@ export async function POST(request: Request) {
                 purpose: string
               }> = []
 
-              // Iterate through ALL messages (most recent first) to find images
-              // This ensures we capture images from earlier in the conversation
-              // For 'reference' purpose: allow multiple images (FLUX 2 Pro supports 8, Seedream supports 14)
-              // For other purposes (starting_frame, last_frame, edit_target): only keep the most recent one
-              for (let i = messages.length - 1; i >= 0; i--) {
-                const msg = messages[i]
-                if (msg.role === 'user' && msg.attachments?.length) {
-                  const imageAttachments = msg.attachments.filter(
-                    att => (att.type === 'image' || att.type === 'reference') && (att.base64 || att.url)
-                  )
-                  for (const att of imageAttachments) {
-                    const purpose = att.purpose || 'reference'
-
-                    // For 'reference' purpose, allow multiple images (models support multiple refs)
-                    // For other purposes, only keep the most recent one
-                    if (purpose === 'reference') {
-                      // Check if we already have this exact URL to avoid duplicates
-                      const alreadyHasUrl = imagesWithPurposes.some(img => img.url === att.url)
-                      if (!alreadyHasUrl) {
-                        imagesWithPurposes.push({
-                          url: att.url,
-                          base64: att.base64,
-                          mimeType: att.mimeType,
-                          purpose: purpose,
-                        })
-                      }
-                    } else {
-                      // For starting_frame, last_frame, edit_target - only keep most recent
-                      const existingWithPurpose = imagesWithPurposes.find(img => img.purpose === purpose)
-                      if (!existingWithPurpose) {
-                        imagesWithPurposes.push({
-                          url: att.url,
-                          base64: att.base64,
-                          mimeType: att.mimeType,
-                          purpose: purpose,
-                        })
-                      }
-                    }
+              // ONLY use images from the LAST user message to prevent stale references
+              // This fixes the bug where old images from previous messages were being reused
+              // Users must explicitly attach images to each generation request
+              const lastUserMessage = messages.filter(m => m.role === 'user').pop()
+              if (lastUserMessage?.attachments?.length) {
+                const imageAttachments = lastUserMessage.attachments.filter(
+                  att => (att.type === 'image' || att.type === 'reference') && (att.base64 || att.url)
+                )
+                for (const att of imageAttachments) {
+                  const purpose = att.purpose || 'reference'
+                  // Check if we already have this exact URL to avoid duplicates
+                  const alreadyHasUrl = imagesWithPurposes.some(img => img.url === att.url)
+                  if (!alreadyHasUrl) {
+                    imagesWithPurposes.push({
+                      url: att.url,
+                      base64: att.base64,
+                      mimeType: att.mimeType,
+                      purpose: purpose,
+                    })
                   }
                 }
               }
@@ -609,6 +651,10 @@ export async function POST(request: Request) {
                 console.log('[Chat] Generation successful! imageUrl:', genResult.imageUrl)
                 console.log('[Chat] All output URLs:', genResult.outputUrls)
                 // Send complete status with result - include all output URLs for sequential generation
+                // Also include reference images used so UI can display them
+                const referenceImagesUsed = imagesWithPurposes
+                  .filter(img => img.url && img.purpose === 'reference')
+                  .map(img => ({ url: img.url, purpose: img.purpose }))
                 const completeData = JSON.stringify({
                   generation: {
                     status: 'complete',
@@ -618,6 +664,7 @@ export async function POST(request: Request) {
                       imageUrl: genResult.imageUrl,
                       outputUrls: genResult.outputUrls || [genResult.imageUrl],
                       prompt: genBlock.prompt,
+                      referenceImages: referenceImagesUsed.length > 0 ? referenceImagesUsed : undefined,
                     }
                   }
                 })
@@ -667,6 +714,16 @@ export async function POST(request: Request) {
               })
               controller.enqueue(encoder.encode(`data: ${errorData}\n\n`))
             }
+          }
+
+          // After streaming is complete, check for director's notes
+          const directorsNotes = parseDirectorsNotes(fullResponse)
+          if (directorsNotes) {
+            // Send director's notes event to client
+            const notesData = JSON.stringify({
+              directorsNotes: directorsNotes
+            })
+            controller.enqueue(encoder.encode(`data: ${notesData}\n\n`))
           }
 
           // Send done marker

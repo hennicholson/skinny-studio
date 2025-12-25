@@ -11,8 +11,17 @@ import {
   Check,
   X,
   Sparkles,
+  Layers,
+  Package,
+  Music,
+  Target,
+  Smartphone,
+  LucideIcon,
 } from 'lucide-react'
 import { useChat, Conversation } from '@/lib/context/chat-context'
+import { useSessions } from '@/lib/context/sessions-context'
+import { useApp } from '@/lib/context/app-context'
+import { mockModels, Session } from '@/lib/types'
 import {
   Sidebar,
   SidebarBody,
@@ -20,6 +29,18 @@ import {
   SidebarLogo,
   useSidebar,
 } from '@/components/ui/sidebar'
+
+// Map icon names to lucide components for sessions
+const sessionIconMap: Record<string, LucideIcon> = {
+  Package,
+  Music,
+  Target,
+  Smartphone,
+}
+
+function getSessionIcon(iconName: string): LucideIcon {
+  return sessionIconMap[iconName] || Layers
+}
 
 // Smooth spring animation config
 const smoothSpring = {
@@ -184,6 +205,116 @@ const ConversationItem = memo(function ConversationItem({
   )
 })
 
+// Session item component - memoized for performance
+const SessionItem = memo(function SessionItem({
+  session,
+  isActive,
+  onSelect,
+  onDelete,
+  templateIcon,
+}: {
+  session: Session
+  isActive: boolean
+  onSelect: () => void
+  onDelete: () => void
+  templateIcon: string
+}) {
+  const { open, animate } = useSidebar()
+  const Icon = getSessionIcon(templateIcon)
+
+  // Get status badge color
+  const statusColors = {
+    planning: 'text-amber-400',
+    in_progress: 'text-blue-400',
+    completed: 'text-green-400',
+  }
+
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, x: -8 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: -8 }}
+      transition={smoothSpring}
+      className={cn(
+        "relative group/session rounded-xl cursor-pointer",
+        "transition-colors duration-150 ease-out",
+        isActive
+          ? "bg-white/[0.06]"
+          : "hover:bg-white/[0.03]"
+      )}
+      onClick={onSelect}
+    >
+      <div className="flex items-center gap-2.5 px-3 py-2.5">
+        {/* Active indicator - smooth pill on left with different color */}
+        <motion.div
+          className="absolute left-0 top-1/2 -translate-y-1/2 w-[2px] rounded-full bg-gradient-to-b from-purple-400 to-pink-400"
+          initial={{ height: 0, opacity: 0 }}
+          animate={{
+            height: isActive ? 16 : 0,
+            opacity: isActive ? 1 : 0
+          }}
+          transition={smoothSpring}
+        />
+
+        {/* Icon with subtle glow when active - uses session template icon */}
+        <div className={cn(
+          "flex items-center justify-center shrink-0 w-7 h-7 rounded-lg transition-all duration-200",
+          isActive
+            ? "bg-purple-500/10 text-purple-400"
+            : "text-zinc-600 group-hover/session:text-zinc-400"
+        )}>
+          <Icon size={14} strokeWidth={1.5} />
+        </div>
+
+        {/* Content */}
+        <motion.div
+          animate={{
+            display: animate ? (open ? "flex" : "none") : "flex",
+            opacity: animate ? (open ? 1 : 0) : 1,
+          }}
+          transition={{ duration: 0.15 }}
+          className="flex-1 min-w-0 flex items-center justify-between gap-2"
+        >
+          <div className="flex-1 min-w-0">
+            <p className={cn(
+              "text-[13px] font-medium truncate transition-colors duration-150",
+              isActive ? "text-white" : "text-zinc-400 group-hover/session:text-zinc-300"
+            )}>
+              {session.title}
+            </p>
+            {/* Status badge */}
+            <p className={cn(
+              "text-[10px] truncate",
+              statusColors[session.status]
+            )}>
+              {session.status === 'in_progress' ? 'In Progress' :
+               session.status.charAt(0).toUpperCase() + session.status.slice(1)}
+            </p>
+          </div>
+
+          {/* Time badge - subtle */}
+          <span className="text-[10px] text-zinc-600 tabular-nums shrink-0">
+            {formatRelativeTime(session.updatedAt)}
+          </span>
+        </motion.div>
+
+        {/* Action buttons - fade in on hover */}
+        {open && (
+          <div className="flex items-center gap-0.5 opacity-0 group-hover/session:opacity-100 transition-opacity duration-150">
+            <button
+              onClick={(e) => { e.stopPropagation(); onDelete() }}
+              className="p-1.5 rounded-md text-zinc-600 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+            >
+              <Trash2 size={12} />
+            </button>
+          </div>
+        )}
+      </div>
+    </motion.div>
+  )
+})
+
 // Inner content component
 function ChatSidebarContent() {
   const { open } = useSidebar()
@@ -194,8 +325,27 @@ function ChatSidebarContent() {
     deleteConversation,
     renameConversation
   } = useChat()
+  const {
+    sessions,
+    currentSession,
+    loadSession,
+    deleteSession,
+    getTemplate,
+  } = useSessions()
+  const { setSelectedModel } = useApp()
 
   const { conversations, currentConversationId } = state
+
+  // Get session-mode model for switching to session view
+  const sessionModeModel = mockModels.find(m => m.id === 'session-mode')
+
+  // Handle clicking on a session - load it and switch to session mode
+  const handleSelectSession = useCallback((sessionId: string) => {
+    loadSession(sessionId)
+    if (sessionModeModel) {
+      setSelectedModel(sessionModeModel)
+    }
+  }, [loadSession, sessionModeModel, setSelectedModel])
 
   return (
     <SidebarBody className="justify-between gap-6">
@@ -238,8 +388,29 @@ function ChatSidebarContent() {
           </motion.button>
         </div>
 
+        {/* Sessions Section */}
+        {sessions.length > 0 && (
+          <SidebarSection title="Sessions">
+            <div className="space-y-1">
+              {sessions.map((session) => {
+                const template = getTemplate(session.templateId)
+                return (
+                  <SessionItem
+                    key={session.id}
+                    session={session}
+                    isActive={currentSession?.id === session.id}
+                    onSelect={() => handleSelectSession(session.id)}
+                    onDelete={() => deleteSession(session.id)}
+                    templateIcon={template?.icon || 'Layers'}
+                  />
+                )
+              })}
+            </div>
+          </SidebarSection>
+        )}
+
         {/* Conversations Section */}
-        <SidebarSection title="History">
+        <SidebarSection title="Chats">
           {conversations.length === 0 ? (
             open && (
               <motion.div
@@ -279,7 +450,10 @@ function ChatSidebarContent() {
           className="px-4 py-3 border-t border-white/[0.04]"
         >
           <p className="text-[11px] sm:text-[10px] text-zinc-600 text-center">
-            {conversations.length} conversation{conversations.length !== 1 ? 's' : ''}
+            {sessions.length > 0 && (
+              <span>{sessions.length} session{sessions.length !== 1 ? 's' : ''} &bull; </span>
+            )}
+            {conversations.length} chat{conversations.length !== 1 ? 's' : ''}
           </p>
         </motion.div>
       )}
