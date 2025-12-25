@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import Image from 'next/image'
 import { useSearchParams, useRouter } from 'next/navigation'
@@ -40,24 +40,17 @@ const viewTransition = {
   ease: [0.4, 0, 0.2, 1] as const
 }
 
-export default function Home() {
-  // Mode state - start with chat
-  const [mode, setMode] = useState<Mode>('chat')
-  // Settings panel state - which panel to show when entering settings
-  const [settingsPanel, setSettingsPanel] = useState<'main' | 'profile' | 'balance'>('main')
-
+// Component that handles URL params - needs to be wrapped in Suspense
+function WhopDevTokenHandler() {
   const searchParams = useSearchParams()
   const router = useRouter()
 
-  // Handle Whop dev token from URL (when redirected directly to root)
   useEffect(() => {
     const devToken = searchParams.get('whop-dev-user-token')
 
     if (devToken) {
-      // Store the token for API calls
       localStorage.setItem('whop-dev-token', devToken)
 
-      // Decode JWT to get user info
       try {
         const parts = devToken.split('.')
         if (parts.length === 3) {
@@ -69,10 +62,18 @@ export default function Home() {
         console.error('Failed to decode dev token:', e)
       }
 
-      // Remove token from URL to clean it up
       router.replace('/')
     }
   }, [searchParams, router])
+
+  return null
+}
+
+export default function Home() {
+  // Mode state - start with chat
+  const [mode, setMode] = useState<Mode>('chat')
+  // Settings panel state - which panel to show when entering settings
+  const [settingsPanel, setSettingsPanel] = useState<'main' | 'profile' | 'balance'>('main')
 
   // Get toast from app context
   const { showToast } = useApp()
@@ -96,6 +97,11 @@ export default function Home() {
 
   return (
     <main className="h-[100dvh] bg-black flex flex-col overflow-hidden">
+      {/* Handle Whop dev token from URL */}
+      <Suspense fallback={null}>
+        <WhopDevTokenHandler />
+      </Suspense>
+
       {/* Header */}
       <header className="flex-shrink-0 px-4 sm:px-6 py-3 border-b border-zinc-900">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
