@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { cn } from '@/lib/utils'
 import { User, Bot, Copy, Check, Loader2, Image as ImageIcon, AlertCircle, Download, ExternalLink, Bookmark, Video, RefreshCw, MessageSquarePlus, Pencil, Sparkles, Play, Save, ChevronDown, ChevronUp, ChevronRight, Lightbulb, X, Plus } from 'lucide-react'
 import { ChatMessage as ChatMessageType, ChatAttachment, GenerationResult } from '@/lib/context/chat-context'
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import Image from 'next/image'
 import ReactMarkdown from 'react-markdown'
 import { useGeneration, Generation } from '@/lib/context/generation-context'
@@ -16,6 +16,7 @@ import { Skill } from '@/lib/types'
 import { toast } from 'sonner'
 import { SaveSkillModal } from '@/components/modals/save-skill-modal'
 import { DirectorsNotes } from '@/lib/context/chat-context'
+import { ImageSourcePicker } from './image-source-picker'
 
 // Smart image component that handles temporary URL failures
 // Falls back to permanent URL from database if temp URL fails
@@ -832,6 +833,7 @@ export const ChatMessage = memo(function ChatMessage({ message, onQuickGenerate,
   // Editable reference images - allows users to add/remove before clicking Generate
   const [editableRefs, setEditableRefs] = useState<ChatAttachment[]>(pendingReferenceImages || [])
   const [showImagePicker, setShowImagePicker] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   // NOTE: Removed useEffect that was syncing pendingReferenceImages to editableRefs
   // The useEffect was causing a bug where user removals were being overwritten on parent re-renders
@@ -1107,38 +1109,38 @@ export const ChatMessage = memo(function ChatMessage({ message, onQuickGenerate,
                     </button>
                   </div>
                 ))}
-                {/* Add button with file input */}
-                <label
+                {/* Add button - opens ImageSourcePicker for Local or Skinny Hub */}
+                <button
+                  onClick={() => setShowImagePicker(true)}
                   className="w-10 h-10 rounded-md border border-dashed border-white/20 flex items-center justify-center hover:border-skinny-lime/50 hover:bg-white/[0.02] transition-colors cursor-pointer"
                   title="Add reference image"
                 >
                   <Plus size={16} className="text-white/40" />
-                  <input
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0]
-                      if (!file) return
+                </button>
+                {/* Hidden file input for local uploads */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    if (!file) return
 
-                      // Create a URL for the file and add as attachment
-                      const url = URL.createObjectURL(file)
-                      const newAttachment: ChatAttachment = {
-                        id: `ref_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-                        type: 'reference',
-                        url,
-                        name: file.name,
-                        purpose: 'reference',
-                        file,
-                        mimeType: file.type,
-                      }
-                      handleAddRef(newAttachment)
-
-                      // Reset input so same file can be selected again
-                      e.target.value = ''
-                    }}
-                  />
-                </label>
+                    const url = URL.createObjectURL(file)
+                    const newAttachment: ChatAttachment = {
+                      id: `ref_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+                      type: 'reference',
+                      url,
+                      name: file.name,
+                      purpose: 'reference',
+                      file,
+                      mimeType: file.type,
+                    }
+                    handleAddRef(newAttachment)
+                    e.target.value = ''
+                  }}
+                />
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -1179,6 +1181,21 @@ export const ChatMessage = memo(function ChatMessage({ message, onQuickGenerate,
             description: 'You can now use it with @shortcut in your prompts',
           })
         }}
+      />
+
+      {/* Image Source Picker - for adding reference images from Local or Skinny Hub */}
+      <ImageSourcePicker
+        isOpen={showImagePicker}
+        onClose={() => setShowImagePicker(false)}
+        onSelectLocalFile={() => {
+          setShowImagePicker(false)
+          fileInputRef.current?.click()
+        }}
+        onSelectImage={(attachment) => {
+          // Add as reference directly (purpose already set in picker for hub images)
+          handleAddRef({ ...attachment, purpose: 'reference' })
+        }}
+        supportsVision={true}
       />
     </motion.div>
   )
