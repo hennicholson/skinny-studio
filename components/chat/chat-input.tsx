@@ -391,7 +391,7 @@ export function ChatInput({
     e.target.value = ''
   }
 
-  // Analyze image with Gemini
+  // Analyze image with Gemini (for manual analyze flow)
   const analyzeImage = useCallback(async (attachment: ChatAttachment) => {
     setIsAnalyzing(true)
     setAnalysisText('')
@@ -449,22 +449,96 @@ export function ChatInput({
     }
   }, [])
 
+  // Background analyze for automatic context (runs after purpose selection)
+  const analyzeImageBackground = useCallback(async (attachment: ChatAttachment, purpose: ImagePurpose) => {
+    try {
+      const body: Record<string, any> = {
+        purpose: purpose, // Use actual purpose for context-aware analysis
+      }
+
+      // If we have a file, convert to base64
+      if (attachment.file) {
+        const reader = new FileReader()
+        const base64Promise = new Promise<string>((resolve, reject) => {
+          reader.onload = () => {
+            const result = reader.result as string
+            const base64 = result.split(',')[1]
+            resolve(base64)
+          }
+          reader.onerror = reject
+        })
+        reader.readAsDataURL(attachment.file)
+        body.base64 = await base64Promise
+        body.mimeType = attachment.file.type
+      } else {
+        body.imageUrl = attachment.url
+      }
+
+      // Get auth headers
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (typeof window !== 'undefined') {
+        const devToken = localStorage.getItem('whop-dev-token')
+        const devUserId = localStorage.getItem('whop-dev-user-id')
+        if (devToken) headers['x-whop-user-token'] = devToken
+        if (devUserId) headers['x-whop-user-id'] = devUserId
+      }
+
+      const response = await fetch('/api/analyze-image', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        // Update the attachment with analysis result
+        setAttachments(prev => prev.map(a =>
+          a.id === attachment.id
+            ? { ...a, analysis: data.analysis, analysisStatus: 'complete' as const }
+            : a
+        ))
+      } else {
+        // Mark as error but don't block the user
+        setAttachments(prev => prev.map(a =>
+          a.id === attachment.id
+            ? { ...a, analysisStatus: 'error' as const }
+            : a
+        ))
+      }
+    } catch (error) {
+      console.error('Background image analysis error:', error)
+      setAttachments(prev => prev.map(a =>
+        a.id === attachment.id
+          ? { ...a, analysisStatus: 'error' as const }
+          : a
+      ))
+    }
+  }, [])
+
   // Handle purpose selection from modal
   const handlePurposeSelected = useCallback((purpose: ImagePurpose) => {
     if (!pendingAttachment) return
 
     if (purpose === 'analyze') {
-      // Start analysis flow
+      // Start manual analysis flow with preview modal
       setShowPurposeModal(false)
       setShowAnalysisModal(true)
       analyzeImage(pendingAttachment)
     } else {
-      // Direct attachment without analysis
-      setAttachments(prev => [...prev, { ...pendingAttachment, purpose }])
+      // Add attachment immediately with analyzing status
+      const attachmentWithPurpose: ChatAttachment = {
+        ...pendingAttachment,
+        purpose,
+        analysisStatus: 'analyzing', // Show analyzing indicator
+      }
+      setAttachments(prev => [...prev, attachmentWithPurpose])
       setPendingAttachment(null)
       setShowPurposeModal(false)
+
+      // Trigger automatic background analysis so AI has context
+      analyzeImageBackground(attachmentWithPurpose, purpose)
     }
-  }, [pendingAttachment, analyzeImage])
+  }, [pendingAttachment, analyzeImage, analyzeImageBackground])
 
   // Handle analysis modal confirm (user selects final purpose after analysis)
   const handleAnalysisConfirm = useCallback((finalPurpose: ImagePurpose) => {
@@ -548,17 +622,31 @@ export function ChatInput({
                       exit={{ opacity: 0, scale: 0.8 }}
                       className="relative group"
                     >
-                      <div className="w-14 h-14 rounded-lg overflow-hidden border border-white/[0.1] bg-white/[0.03]">
+                      <div className={cn(
+                        "w-14 h-14 rounded-lg overflow-hidden border bg-white/[0.03] relative",
+                        attachment.analysisStatus === 'analyzing'
+                          ? "border-cyan-500/50"
+                          : attachment.analysisStatus === 'complete'
+                          ? "border-cyan-500/30"
+                          : "border-white/[0.1]"
+                      )}>
                         <img
                           src={attachment.url}
                           alt={attachment.name}
                           className="w-full h-full object-cover"
                         />
+                        {/* Analyzing overlay */}
+                        {attachment.analysisStatus === 'analyzing' && (
+                          <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                            <Loader2 size={16} className="text-cyan-400 animate-spin" />
+                          </div>
+                        )}
                       </div>
                       {/* Purpose Badge */}
                       {attachment.purpose && (
                         <span className="absolute bottom-0 left-0 right-0 text-[8px] bg-black/80 text-white/90 px-1 py-0.5 text-center truncate flex items-center justify-center gap-0.5">
-                          {attachment.analysis && <Sparkles size={8} className="text-cyan-400" />}
+                          {attachment.analysisStatus === 'analyzing' && <Loader2 size={8} className="text-cyan-400 animate-spin" />}
+                          {attachment.analysisStatus === 'complete' && <Sparkles size={8} className="text-cyan-400" />}
                           {IMAGE_PURPOSE_LABELS[attachment.purpose]}
                         </span>
                       )}
