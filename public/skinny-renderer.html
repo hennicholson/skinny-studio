@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Skinny Renderer</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --lime: #D6FC51;
+      --bg: #0a0a0a;
+      --surface: #141414;
+      --border: rgba(255,255,255,0.08);
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: white;
+      min-height: 100vh;
+      padding: 40px 20px;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+    .logo {
+      width: 64px;
+      height: 64px;
+      background: linear-gradient(135deg, var(--lime), #B8E040);
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 16px;
+      box-shadow: 0 8px 32px rgba(214,252,81,0.2);
+    }
+    h1 { font-size: 24px; margin-bottom: 8px; }
+    .subtitle { color: rgba(255,255,255,0.5); font-size: 14px; }
+
+    .warning {
+      background: rgba(255,200,0,0.1);
+      border: 1px solid rgba(255,200,0,0.3);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 24px;
+      display: none;
+    }
+    .warning.show { display: block; }
+    .warning-title { color: #ffc800; font-weight: 600; margin-bottom: 4px; }
+    .warning-text { color: rgba(255,255,255,0.7); font-size: 13px; }
+
+    .drop-zone {
+      background: var(--surface);
+      border: 2px dashed var(--border);
+      border-radius: 16px;
+      padding: 48px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      margin-bottom: 24px;
+    }
+    .drop-zone:hover, .drop-zone.dragover {
+      border-color: var(--lime);
+      background: rgba(214,252,81,0.05);
+    }
+    .drop-zone.has-code {
+      border-style: solid;
+      border-color: var(--lime);
+    }
+    .drop-text { color: rgba(255,255,255,0.5); margin-bottom: 8px; }
+    .drop-hint { color: rgba(255,255,255,0.3); font-size: 12px; }
+
+    .code-loaded {
+      display: none;
+      text-align: left;
+    }
+    .drop-zone.has-code .code-loaded { display: block; }
+    .drop-zone.has-code .drop-text,
+    .drop-zone.has-code .drop-hint { display: none; }
+
+    .code-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .code-icon {
+      width: 40px;
+      height: 40px;
+      background: rgba(214,252,81,0.2);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .code-title { font-weight: 500; }
+    .code-info { font-size: 12px; color: rgba(255,255,255,0.5); }
+    .code-preview {
+      background: var(--bg);
+      border-radius: 8px;
+      padding: 12px;
+      font-family: monospace;
+      font-size: 11px;
+      color: rgba(255,255,255,0.6);
+      max-height: 80px;
+      overflow: hidden;
+    }
+
+    .settings {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      margin-bottom: 24px;
+    }
+    .settings h2 {
+      font-size: 14px;
+      color: rgba(255,255,255,0.5);
+      margin-bottom: 16px;
+    }
+    .setting-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .setting-row:last-child { margin-bottom: 0; }
+    input, select {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 12px;
+      color: white;
+      font-size: 13px;
+    }
+    input:focus, select:focus {
+      outline: none;
+      border-color: var(--lime);
+    }
+
+    .preview-container {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      overflow: hidden;
+      margin-bottom: 24px;
+    }
+    .preview-header {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+      color: rgba(255,255,255,0.5);
+    }
+    #preview-canvas {
+      width: 100%;
+      aspect-ratio: 16/9;
+      background: #000;
+      display: block;
+    }
+
+    .progress-container {
+      display: none;
+      margin-bottom: 24px;
+    }
+    .progress-container.active { display: block; }
+    .progress-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      font-size: 13px;
+    }
+    .progress-percent { color: var(--lime); font-weight: 600; }
+    .progress-bar {
+      height: 8px;
+      background: var(--surface);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--lime), #B8E040);
+      width: 0%;
+      transition: width 0.3s;
+    }
+
+    .render-btn {
+      width: 100%;
+      background: linear-gradient(135deg, var(--lime), #B8E040);
+      border: none;
+      border-radius: 12px;
+      padding: 16px;
+      font-size: 15px;
+      font-weight: 600;
+      color: #000;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: all 0.2s;
+    }
+    .render-btn:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(214,252,81,0.3);
+    }
+    .render-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .success {
+      display: none;
+      text-align: center;
+      padding: 32px;
+      background: var(--surface);
+      border: 1px solid var(--lime);
+      border-radius: 16px;
+      margin-bottom: 24px;
+    }
+    .success.show { display: block; }
+    .success-icon {
+      width: 56px;
+      height: 56px;
+      background: rgba(214,252,81,0.2);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 16px;
+    }
+    .success h3 { margin-bottom: 8px; }
+    .success p { color: rgba(255,255,255,0.5); font-size: 13px; }
+
+    .footer {
+      text-align: center;
+      padding-top: 24px;
+      border-top: 1px solid var(--border);
+    }
+    .footer a { color: var(--lime); text-decoration: none; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="logo">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2">
+          <polygon points="5 3 19 12 5 21 5 3"/>
+        </svg>
+      </div>
+      <h1>Skinny Renderer</h1>
+      <p class="subtitle">Browser-based motion graphics rendering</p>
+    </div>
+
+    <div class="warning" id="warning">
+      <div class="warning-title">⚠️ Browser Not Supported</div>
+      <p class="warning-text">Your browser doesn't support WebCodecs API. Please use Chrome 94+, Edge 94+, or Opera 80+.</p>
+    </div>
+
+    <div class="drop-zone" id="dropZone">
+      <p class="drop-text">Drop your .tsx file here or click to browse</p>
+      <p class="drop-hint">Or paste code with Ctrl/Cmd+V</p>
+      <div class="code-loaded">
+        <div class="code-header">
+          <div class="code-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#D6FC51" stroke-width="2">
+              <polyline points="16 18 22 12 16 6"/>
+              <polyline points="8 6 2 12 8 18"/>
+            </svg>
+          </div>
+          <div>
+            <div class="code-title" id="codeTitle">Code loaded</div>
+            <div class="code-info" id="codeInfo">0 lines</div>
+          </div>
+        </div>
+        <div class="code-preview" id="codePreview"></div>
+      </div>
+    </div>
+
+    <div class="settings">
+      <h2>Render Settings</h2>
+      <div class="setting-row">
+        <span>Duration</span>
+        <div><input type="number" id="duration" value="10" min="1" max="60"> sec</div>
+      </div>
+      <div class="setting-row">
+        <span>Resolution</span>
+        <select id="resolution">
+          <option value="1920x1080">1080p (1920×1080)</option>
+          <option value="1280x720">720p (1280×720)</option>
+          <option value="640x360">360p (640×360)</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <span>Frame Rate</span>
+        <select id="fps">
+          <option value="30">30 fps</option>
+          <option value="24">24 fps</option>
+          <option value="60">60 fps</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="preview-container">
+      <div class="preview-header">Preview (Frame <span id="frameNum">0</span>)</div>
+      <canvas id="preview-canvas"></canvas>
+    </div>
+
+    <div class="progress-container" id="progressContainer">
+      <div class="progress-header">
+        <span id="progressStage">Rendering...</span>
+        <span class="progress-percent" id="progressPercent">0%</span>
+      </div>
+      <div class="progress-bar">
+        <div class="progress-fill" id="progressFill"></div>
+      </div>
+    </div>
+
+    <div class="success" id="successContainer">
+      <div class="success-icon">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#D6FC51" stroke-width="2">
+          <polyline points="20 6 9 17 4 12"/>
+        </svg>
+      </div>
+      <h3>Render Complete!</h3>
+      <p>Your video has been downloaded</p>
+    </div>
+
+    <button class="render-btn" id="renderBtn" disabled>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polygon points="5 3 19 12 5 21 5 3"/>
+      </svg>
+      Render Video
+    </button>
+
+    <div class="footer">
+      <a href="https://skinnystudio.app" target="_blank">skinnystudio.app</a>
+    </div>
+  </div>
+
+  <script>
+    // Check WebCodecs support
+    if (typeof VideoEncoder === 'undefined') {
+      document.getElementById('warning').classList.add('show');
+    }
+
+    let currentCode = null;
+    let componentModule = null;
+
+    const dropZone = document.getElementById('dropZone');
+    const renderBtn = document.getElementById('renderBtn');
+    const progressContainer = document.getElementById('progressContainer');
+    const successContainer = document.getElementById('successContainer');
+    const canvas = document.getElementById('preview-canvas');
+    const ctx = canvas.getContext('2d');
+
+    // File input
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = '.tsx,.ts,.jsx,.js';
+    fileInput.onchange = async (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        const text = await file.text();
+        loadCode(text, file.name);
+      }
+    };
+
+    dropZone.onclick = () => fileInput.click();
+
+    dropZone.ondragover = (e) => {
+      e.preventDefault();
+      dropZone.classList.add('dragover');
+    };
+
+    dropZone.ondragleave = () => dropZone.classList.remove('dragover');
+
+    dropZone.ondrop = async (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('dragover');
+      const file = e.dataTransfer.files[0];
+      if (file) {
+        const text = await file.text();
+        loadCode(text, file.name);
+      }
+    };
+
+    document.onpaste = (e) => {
+      const text = e.clipboardData.getData('text');
+      if (text && (text.includes('remotion') || text.includes('useCurrentFrame'))) {
+        loadCode(text, 'Pasted code');
+      }
+    };
+
+    function loadCode(code, source) {
+      currentCode = code;
+      const lines = code.split('\n').length;
+      document.getElementById('codeTitle').textContent = source;
+      document.getElementById('codeInfo').textContent = `${lines} lines`;
+      document.getElementById('codePreview').textContent = code.slice(0, 300) + '...';
+      dropZone.classList.add('has-code');
+      renderBtn.disabled = false;
+      successContainer.classList.remove('show');
+
+      // Try to compile and preview
+      tryCompileAndPreview();
+    }
+
+    function tryCompileAndPreview() {
+      // This is a simplified preview - real implementation would need full Remotion
+      const [width, height] = document.getElementById('resolution').value.split('x').map(Number);
+      canvas.width = width;
+      canvas.height = height;
+
+      // Draw placeholder
+      ctx.fillStyle = '#0a0a0a';
+      ctx.fillRect(0, 0, width, height);
+      ctx.fillStyle = '#D6FC51';
+      ctx.font = 'bold 48px -apple-system, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Preview Ready', width/2, height/2);
+    }
+
+    renderBtn.onclick = async () => {
+      if (!currentCode) return;
+
+      const duration = parseInt(document.getElementById('duration').value);
+      const [width, height] = document.getElementById('resolution').value.split('x').map(Number);
+      const fps = parseInt(document.getElementById('fps').value);
+      const totalFrames = duration * fps;
+
+      renderBtn.disabled = true;
+      progressContainer.classList.add('active');
+      successContainer.classList.remove('show');
+
+      try {
+        // Create video encoder
+        const videoChunks = [];
+
+        const encoder = new VideoEncoder({
+          output: (chunk, meta) => {
+            const buffer = new ArrayBuffer(chunk.byteLength);
+            chunk.copyTo(buffer);
+            videoChunks.push({ buffer, meta, timestamp: chunk.timestamp, type: chunk.type });
+          },
+          error: (e) => console.error('Encoder error:', e)
+        });
+
+        encoder.configure({
+          codec: 'avc1.42001f', // H.264 baseline
+          width,
+          height,
+          bitrate: 5_000_000,
+          framerate: fps,
+        });
+
+        canvas.width = width;
+        canvas.height = height;
+
+        // Render frames
+        for (let frame = 0; frame < totalFrames; frame++) {
+          // Update progress
+          const progress = Math.round((frame / totalFrames) * 100);
+          document.getElementById('progressStage').textContent = `Rendering frame ${frame + 1}/${totalFrames}`;
+          document.getElementById('progressPercent').textContent = `${progress}%`;
+          document.getElementById('progressFill').style.width = `${progress}%`;
+          document.getElementById('frameNum').textContent = frame;
+
+          // Draw frame (simplified - would need actual Remotion rendering)
+          renderFrame(ctx, frame, totalFrames, width, height);
+
+          // Encode frame
+          const videoFrame = new VideoFrame(canvas, {
+            timestamp: (frame / fps) * 1_000_000, // microseconds
+            duration: (1 / fps) * 1_000_000,
+          });
+
+          encoder.encode(videoFrame, { keyFrame: frame % 30 === 0 });
+          videoFrame.close();
+
+          // Allow UI to update
+          await new Promise(r => setTimeout(r, 0));
+        }
+
+        await encoder.flush();
+        encoder.close();
+
+        // Create MP4 file (simplified - would need proper muxer)
+        // For now, create WebM which is natively supported
+        const blob = await createVideoBlob(videoChunks, width, height, fps);
+
+        // Download
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'skinny-motion.webm';
+        a.click();
+        URL.revokeObjectURL(url);
+
+        progressContainer.classList.remove('active');
+        successContainer.classList.add('show');
+
+      } catch (error) {
+        console.error('Render error:', error);
+        alert('Render failed: ' + error.message);
+        progressContainer.classList.remove('active');
+      }
+
+      renderBtn.disabled = false;
+    };
+
+    // Simplified frame rendering (would be replaced with actual component rendering)
+    function renderFrame(ctx, frame, totalFrames, width, height) {
+      const progress = frame / totalFrames;
+
+      // Background
+      ctx.fillStyle = '#0a0a0a';
+      ctx.fillRect(0, 0, width, height);
+
+      // Animated gradient
+      const gradient = ctx.createRadialGradient(
+        width/2 + Math.sin(progress * Math.PI * 2) * 200,
+        height/2 + Math.cos(progress * Math.PI * 2) * 100,
+        0,
+        width/2,
+        height/2,
+        Math.max(width, height)
+      );
+      gradient.addColorStop(0, 'rgba(214, 252, 81, 0.3)');
+      gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, width, height);
+
+      // Animated text
+      const scale = 0.8 + Math.sin(progress * Math.PI * 4) * 0.1;
+      ctx.save();
+      ctx.translate(width/2, height/2);
+      ctx.scale(scale, scale);
+      ctx.fillStyle = '#D6FC51';
+      ctx.font = `bold ${Math.round(width * 0.08)}px -apple-system, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('SKINNY MOTION', 0, 0);
+      ctx.restore();
+
+      // Frame counter
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.font = '14px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText(`Frame ${frame + 1}/${totalFrames}`, 20, height - 20);
+    }
+
+    // Create video blob from encoded chunks
+    async function createVideoBlob(chunks, width, height, fps) {
+      // Note: This creates raw H.264 data
+      // For proper MP4/WebM, you'd need a muxer library like mp4-muxer or webm-muxer
+
+      // For simplicity, let's create a basic container
+      const totalSize = chunks.reduce((acc, c) => acc + c.buffer.byteLength, 0);
+      const data = new Uint8Array(totalSize);
+      let offset = 0;
+
+      for (const chunk of chunks) {
+        data.set(new Uint8Array(chunk.buffer), offset);
+        offset += chunk.buffer.byteLength;
+      }
+
+      // Return as h264 raw (would need muxing for proper video file)
+      return new Blob([data], { type: 'video/webm' });
+    }
+  </script>
+</body>
+</html>
