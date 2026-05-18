@@ -1,0 +1,5 @@
+-- Placeholder for remote migration 20260106092533.
+-- This migration was applied on the remote project before the local
+-- migrations directory was synced. The SQL lives in the dashboard-
+-- triggered history. This file exists so the CLI's two-way sync stops
+-- flagging the remote version as missing locally. No-op intentionally.

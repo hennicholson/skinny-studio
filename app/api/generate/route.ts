@@ -346,11 +346,19 @@ export async function POST(request: Request) {
       balanceCents = freshBalance
     }
 
-    // Build input from model's default parameters merged with user params
+    // Build input from model's default parameters merged with user params.
+    // Strip internal `_skinny_*` markers (e.g. _skinny_source — canvas origin
+    // tag attached by the canvas executor) so Replicate's strict input
+    // validator doesn't reject the field. The markers stay on `params` for
+    // persistence to `generations.parameters` below.
+    const replicateParams: Record<string, any> = {}
+    for (const k of Object.keys(params)) {
+      if (!k.startsWith('_skinny_')) replicateParams[k] = (params as any)[k]
+    }
     const input: Record<string, any> = {
       prompt,
       ...studioModel.default_parameters,
-      ...params,
+      ...replicateParams,
     }
 
     // Handle video-specific parameters
@@ -438,8 +446,8 @@ export async function POST(request: Request) {
       // ===== REFERENCE IMAGES (ingredients, style guides) =====
       // Based on actual Replicate API documentation for each model
       if (byPurpose.reference.length > 0) {
-        // FLUX 2 Pro/Dev: input_images (array, max 8)
-        if (model === 'flux-2-pro' || model === 'flux-2-dev') {
+        // FLUX 2 Pro/Dev/Flex: input_images (array)
+        if (model === 'flux-2-pro' || model === 'flux-2-dev' || model === 'flux-2-flex') {
           input.input_images = byPurpose.reference
         }
         // Seedream 4.5: image_input (array, 1-14 images)
@@ -461,6 +469,10 @@ export async function POST(request: Request) {
         // Qwen Image Edit Plus: image (array) - can also be used as reference
         else if (model === 'qwen-image-edit-plus') {
           input.image = byPurpose.reference
+        }
+        // Qwen Image 2512: image (single URI) - for image-to-image
+        else if (model === 'qwen-image-2512') {
+          input.image = byPurpose.reference[0]
         }
         // Generic fallback
         else {
@@ -854,95 +866,109 @@ export async function POST(request: Request) {
       }
     }
 
-    // === DEDUCT BALANCE ATOMICALLY (only if not lifetime and cost > 0) ===
-    // Uses row-level locking to prevent race conditions
-    if (userProfileId && !hasLifetimeAccess && finalCostCents > 0) {
-      const { data: deductResult, error: deductError } = await sbAdmin.rpc(
-        'deduct_balance_safely',
+    // === ATOMIC BILLING (debit + tx + flag in one RPC) ===
+    // Replaces the legacy 3-write pattern (deduct -> insert tx -> mark complete).
+    // The RPC is idempotent: re-calling it for the same generationId returns
+    // 'already_billed' without mutating anything, so client retries are safe.
+    if (whopUserId && userProfileId && generationId) {
+      const extraMetadata: Record<string, any> = {
+        model_name: studioModel.name,
+        prompt,
+        params,
+        pricing_type: studioModel.pricing_type,
+        images_generated: numImagesGenerated,
+        // Seedream 4.5 sequential pricing breakdown
+        ...(model === 'seedream-4.5' && numImagesGenerated > 1 && {
+          sequential_mode: true,
+          cost_per_image_cents: costCents,
+          total_cost_cents: finalCostCents,
+        }),
+        // Video-specific pricing breakdown
+        ...(studioModel.pricing_type === 'per_second' && {
+          duration: effectiveDuration,
+          resolution: effectiveResolution,
+          cost_per_second_cents: studioModel.cost_per_second_cents,
+          resolution_multiplier: studioModel.resolution_multipliers?.[effectiveResolution as string] || 1.0,
+          ...(model.startsWith('veo-') && {
+            generate_audio: effectiveGenerateAudio,
+            audio_pricing: studioModel.parameter_schema?.generate_audio?.pricing,
+          }),
+        }),
+      }
+
+      const { data: billingResult, error: billingError } = await sbAdmin.rpc(
+        'complete_generation_billing',
         {
-          p_user_id: userProfileId,
-          p_amount: finalCostCents
+          p_generation_id: generationId,
+          p_user_profile_id: userProfileId,
+          p_whop_user_id: whopUserId,
+          p_amount_cents: finalCostCents,
+          p_model_slug: model,
+          p_model_category: studioModel.category,
+          p_preview_url: imageUrl || null,
+          p_extra_metadata: extraMetadata,
+          p_path: 'sync',
         }
       )
 
-      if (deductError) {
-        console.error("Failed to call deduct_balance_safely:", deductError)
-      } else if (!deductResult?.success) {
-        // This shouldn't happen since we pre-checked, but log it
-        console.error("Balance deduction failed:", deductResult?.error)
-      } else {
-        // Update local balanceCents with the new balance for response
-        balanceCents = deductResult.new_balance
+      if (billingError) {
+        console.error('[Generate] complete_generation_billing RPC error:', billingError)
+        return NextResponse.json({
+          error: 'Billing system error',
+          code: 'BILLING_FAILED',
+        }, { status: 500 })
       }
-    }
 
-    // === LOG TRANSACTION FOR ALL USERS (including lifetime) ===
-    // This ensures all users see their generation history in spending log
-    if (whopUserId) {
-      const effectiveCost = hasLifetimeAccess ? 0 : finalCostCents
-
-      // Convert cents to dollars for credit_transactions table (amount column is in dollars)
-      const amountInDollars = effectiveCost / 100
-
-      const { error: txError } = await sbAdmin.from("credit_transactions").insert({
-        user_id: whopUserId,
-        type: "PersonaForge",  // Use PersonaForge type to avoid app_id constraint
-        amount: -amountInDollars,
-        amount_charged: amountInDollars,
-        app_name: "Skinny Studio",
-        task: studioModel.category === 'video' ? 'Video Generation' : 'Image Generation',
-        status: "completed",
-        preview: imageUrl,
-        metadata: {
-          model,
-          model_name: studioModel.name,
-          prompt,
-          params,
-          category: studioModel.category,
-          pricing_type: studioModel.pricing_type,
-          is_lifetime_user: hasLifetimeAccess,
-          images_generated: numImagesGenerated,
-          // Seedream 4.5 sequential pricing breakdown
-          ...(model === 'seedream-4.5' && numImagesGenerated > 1 && {
-            sequential_mode: true,
-            cost_per_image_cents: costCents,
-            total_cost_cents: finalCostCents,
-          }),
-          // Video-specific pricing breakdown
-          ...(studioModel.pricing_type === 'per_second' && {
-            duration: effectiveDuration,
-            resolution: effectiveResolution,
-            cost_per_second_cents: studioModel.cost_per_second_cents,
-            resolution_multiplier: studioModel.resolution_multipliers?.[effectiveResolution as string] || 1.0,
-            // Veo audio pricing info
-            ...(model.startsWith('veo-') && {
-              generate_audio: effectiveGenerateAudio,
-              audio_pricing: studioModel.parameter_schema?.generate_audio?.pricing,
-            }),
-          }),
-        },
-      })
-
-      if (txError) {
-        console.error("Failed to log credit transaction:", txError)
+      const status = (billingResult as any)?.status
+      switch (status) {
+        case 'charged':
+        case 'waived': {
+          const newBal = (billingResult as any).new_balance_cents
+          if (typeof newBal === 'number') balanceCents = newBal
+          console.log(`[Generate] Billing ${status} for ${generationId}: tx ${(billingResult as any).tx_id}, billed ${(billingResult as any).billed_amount_cents}¢`)
+          break
+        }
+        case 'already_billed':
+        case 'already_billed_race': {
+          // Idempotent re-call or concurrent caller beat us. Both are success.
+          console.log(`[Generate] Billing ${status} for ${generationId} — nothing changed.`)
+          break
+        }
+        case 'insufficient_balance': {
+          // Pre-check should have caught this, but balance could have been
+          // spent concurrently between pre-check and now. RPC has already
+          // marked generations.billing_status='failed' and NOT inserted a tx.
+          const balanceCentsRemote = (billingResult as any).balance_cents ?? 0
+          const requiredCents = (billingResult as any).required_cents ?? finalCostCents
+          console.warn(`[Generate] Insufficient balance at billing time for ${generationId}: have ${balanceCentsRemote}, need ${requiredCents}`)
+          return NextResponse.json(
+            {
+              error: 'Insufficient balance',
+              required: requiredCents,
+              available: balanceCentsRemote,
+              code: 'INSUFFICIENT_BALANCE',
+            },
+            { status: 402 }
+          )
+        }
+        case 'user_not_found':
+        case 'generation_not_found':
+        case 'invalid_args': {
+          console.error(`[Generate] Billing RPC returned ${status} for gen ${generationId}:`, billingResult)
+          return NextResponse.json({
+            error: 'Billing system error',
+            code: 'BILLING_FAILED',
+            status,
+          }, { status: 500 })
+        }
+        default: {
+          console.error(`[Generate] Billing RPC returned unexpected status "${status}":`, billingResult)
+          return NextResponse.json({
+            error: 'Billing system error',
+            code: 'BILLING_FAILED',
+          }, { status: 500 })
+        }
       }
-    }
-
-    // === MARK BILLING AS COMPLETE ===
-    // This flag tells the webhook not to re-bill if it arrives after us
-    if (generationId) {
-      await sbAdmin
-        .from("generations")
-        .update({
-          output_metadata: {
-            images_generated: numImagesGenerated,
-            storage_complete: true,
-            billing_complete: true,
-            billed_at: new Date().toISOString(),
-            billed_amount_cents: hasLifetimeAccess ? 0 : finalCostCents,
-          },
-        })
-        .eq("id", generationId)
     }
 
     return NextResponse.json({
@@ -955,7 +981,9 @@ export async function POST(request: Request) {
       prompt,
       cost: finalCostCents,
       generationId,
-      newBalance: hasLifetimeAccess ? balanceCents : balanceCents - finalCostCents,
+      // balanceCents is already post-debit (set by the RPC's new_balance_cents return).
+      // For lifetime users it's unchanged. For unauthenticated callers it stays 0.
+      newBalance: balanceCents,
       imagesGenerated: numImagesGenerated,
       // Seedream 4.5 sequential pricing breakdown
       ...(model === 'seedream-4.5' && numImagesGenerated > 1 && {

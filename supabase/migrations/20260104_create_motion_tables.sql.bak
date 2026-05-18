@@ -1,0 +1,196 @@
+-- Create motion tables for Skinny Motion integration
+-- Run this in your Supabase dashboard SQL Editor
+
+-- Brand Profiles table (stores user's branding presets)
+CREATE TABLE IF NOT EXISTS brand_profiles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  whop_user_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+
+  -- Colors
+  primary_color TEXT DEFAULT '#D6FC51',
+  secondary_color TEXT DEFAULT '#B8E040',
+  background_color TEXT DEFAULT '#0D0D0D',
+  accent_colors JSONB DEFAULT '[]',
+
+  -- Typography
+  heading_font TEXT DEFAULT 'Inter',
+  body_font TEXT DEFAULT 'Inter',
+  custom_fonts JSONB DEFAULT '[]',
+
+  -- Assets
+  logo_url TEXT,
+  logo_dark_url TEXT,
+  icon_url TEXT,
+  watermark_url TEXT,
+
+  -- Metadata
+  is_default BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_brand_profiles_user ON brand_profiles(whop_user_id);
+COMMENT ON TABLE brand_profiles IS 'Stores user branding presets (colors, fonts, logos) for motion graphics';
+
+-- Motion Projects table (main project storage)
+CREATE TABLE IF NOT EXISTS motion_projects (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  whop_user_id TEXT NOT NULL,
+  brand_profile_id UUID REFERENCES brand_profiles(id) ON DELETE SET NULL,
+
+  -- Project Info
+  title TEXT NOT NULL,
+  description TEXT,
+  status TEXT DEFAULT 'draft', -- draft, generating, rendering, complete, error
+
+  -- Builder State
+  video_type TEXT NOT NULL,
+  effects JSONB DEFAULT '[]',
+  color_theme TEXT,
+  custom_colors JSONB,
+  speed TEXT DEFAULT 'normal',
+  easing TEXT DEFAULT 'smooth',
+  intensity DECIMAL DEFAULT 0.5,
+  duration INTEGER DEFAULT 5,
+
+  -- Content
+  headline TEXT,
+  subtitle TEXT,
+  details TEXT,
+  natural_language TEXT,
+
+  -- Timeline (scenes structure)
+  timeline JSONB DEFAULT '[]',
+
+  -- Output
+  generated_code TEXT,
+  output_url TEXT,
+  thumbnail_url TEXT,
+
+  -- Billing
+  input_tokens INTEGER DEFAULT 0,
+  output_tokens INTEGER DEFAULT 0,
+  cost_cents INTEGER DEFAULT 0,
+
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_motion_projects_user ON motion_projects(whop_user_id);
+CREATE INDEX IF NOT EXISTS idx_motion_projects_status ON motion_projects(status);
+COMMENT ON TABLE motion_projects IS 'Stores motion graphics projects with builder state and generated output';
+
+-- Motion Scenes table (timeline segments)
+CREATE TABLE IF NOT EXISTS motion_scenes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES motion_projects(id) ON DELETE CASCADE,
+
+  -- Scene Info
+  name TEXT NOT NULL,
+
+  -- Timing
+  start_frame INTEGER NOT NULL,
+  end_frame INTEGER NOT NULL,
+  duration_seconds DECIMAL,
+
+  -- Content
+  content JSONB DEFAULT '{}', -- headline, subtitle, etc. for this scene
+  effects JSONB DEFAULT '[]',
+
+  -- Elements within scene
+  elements JSONB DEFAULT '[]',
+
+  -- Generated Code
+  generated_code TEXT,
+  status TEXT DEFAULT 'pending', -- pending, generated, edited
+
+  -- Order
+  sort_order INTEGER DEFAULT 0,
+
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_motion_scenes_project ON motion_scenes(project_id);
+COMMENT ON TABLE motion_scenes IS 'Stores individual scenes within motion projects with timing and elements';
+
+-- Motion Render Jobs table (track render progress)
+CREATE TABLE IF NOT EXISTS motion_render_jobs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES motion_projects(id) ON DELETE CASCADE,
+  whop_user_id TEXT NOT NULL,
+
+  -- Job Info
+  status TEXT DEFAULT 'queued', -- queued, processing, complete, error
+  progress INTEGER DEFAULT 0, -- 0-100
+
+  -- Config
+  quality TEXT DEFAULT 'preview', -- preview, full
+  resolution TEXT DEFAULT '1080p',
+
+  -- Output
+  output_url TEXT,
+  error_message TEXT,
+
+  -- Timing
+  started_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_render_jobs_project ON motion_render_jobs(project_id);
+CREATE INDEX IF NOT EXISTS idx_render_jobs_status ON motion_render_jobs(status);
+COMMENT ON TABLE motion_render_jobs IS 'Tracks render job progress for motion projects';
+
+-- Enable RLS
+ALTER TABLE brand_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE motion_projects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE motion_scenes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE motion_render_jobs ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies (users can only see their own data)
+CREATE POLICY "Users can view own brand profiles" ON brand_profiles
+  FOR SELECT USING (true);
+
+CREATE POLICY "Users can insert own brand profiles" ON brand_profiles
+  FOR INSERT WITH CHECK (true);
+
+CREATE POLICY "Users can update own brand profiles" ON brand_profiles
+  FOR UPDATE USING (true);
+
+CREATE POLICY "Users can delete own brand profiles" ON brand_profiles
+  FOR DELETE USING (true);
+
+CREATE POLICY "Users can view own motion projects" ON motion_projects
+  FOR SELECT USING (true);
+
+CREATE POLICY "Users can insert own motion projects" ON motion_projects
+  FOR INSERT WITH CHECK (true);
+
+CREATE POLICY "Users can update own motion projects" ON motion_projects
+  FOR UPDATE USING (true);
+
+CREATE POLICY "Users can delete own motion projects" ON motion_projects
+  FOR DELETE USING (true);
+
+CREATE POLICY "Users can view own motion scenes" ON motion_scenes
+  FOR SELECT USING (true);
+
+CREATE POLICY "Users can insert own motion scenes" ON motion_scenes
+  FOR INSERT WITH CHECK (true);
+
+CREATE POLICY "Users can update own motion scenes" ON motion_scenes
+  FOR UPDATE USING (true);
+
+CREATE POLICY "Users can delete own motion scenes" ON motion_scenes
+  FOR DELETE USING (true);
+
+CREATE POLICY "Users can view own render jobs" ON motion_render_jobs
+  FOR SELECT USING (true);
+
+CREATE POLICY "Users can insert own render jobs" ON motion_render_jobs
+  FOR INSERT WITH CHECK (true);
+
+CREATE POLICY "Users can update own render jobs" ON motion_render_jobs
+  FOR UPDATE USING (true);

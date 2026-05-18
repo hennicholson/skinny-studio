@@ -44,3 +44,43 @@ coverage/
 # Misc
 *.log
 .netlify/
+
+# Claude Code artifacts
+.claude/worktrees/
+.claude/memory/
+.claude/projects/
+
+# Local AI session artifacts
+NODE_AUDIT_*.md
+NODE_FIX_*.md
+UTILITY_NODES_AUDIT_*.md
+UX_AUDIT_*.md
+ADVERSARIAL_REVIEW_*.md
+AUDIT_FINDINGS_*.md
+DEVELOPMENT_CONTEXT.md
+MODEL_AUDIT_*.md
+.claude/
+
+# Auto-generated claude-mem activity logs (not the root CLAUDE.md which is project doc)
+app/**/CLAUDE.md
+components/**/CLAUDE.md
+lib/**/CLAUDE.md
+scripts/**/CLAUDE.md
+supabase/**/CLAUDE.md
+netlify/**/CLAUDE.md
+public/**/CLAUDE.md
+
+# Claude Code MCP config (contains tokens)
+.mcp.json
+
+# Audit script reports + baselines (user PII)
+scripts/audit-billing-baseline-*.txt
+scripts/audit-billing-report-*.json
+
+# Supabase CLI local cache
+supabase/.temp/
+
+# More CLAUDE.md catch-alls
+tests/**/CLAUDE.md
+docs/**/CLAUDE.md
+public/downloads/

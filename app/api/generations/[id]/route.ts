@@ -122,7 +122,7 @@ export async function GET(
 
     const { data: generation, error } = await sbAdmin
       .from('generations')
-      .select('id, replicate_status, output_urls, prompt, replicate_error, model_slug, replicate_prediction_id, whop_user_id, user_id, cost_cents, model_category, output_metadata')
+      .select('id, replicate_status, output_urls, prompt, replicate_error, model_slug, replicate_prediction_id, whop_user_id, user_id, cost_cents, model_category, output_metadata, billing_status')
       .eq('id', params.id)
       .eq('whop_user_id', whop.id)  // Only user's own generations
       .single()
@@ -164,123 +164,64 @@ export async function GET(
               })
               .eq('id', generation.id)
 
-            // === BILLING: Check if billing is needed ===
-            const existingMetadata = (generation.output_metadata as Record<string, any>) || {}
-            if (!existingMetadata.billing_complete && generation.user_id && generation.cost_cents > 0) {
-              // RACE CONDITION FIX: Check if a transaction already exists for this generation
-              // This prevents double-billing when webhook and polling run simultaneously
-              const { data: existingTx } = await sbAdmin
-                .from('credit_transactions')
-                .select('id')
-                .eq('user_id', generation.whop_user_id)
-                .contains('metadata', { generation_id: generation.id })
-                .maybeSingle()
+            // Seedream 4.5 sequential generation multiplies cost by image count.
+            const numImagesGenerated = permanentUrls.length
+            let finalCostCents = generation.cost_cents || 0
+            if (generation.model_slug === 'seedream-4.5' && numImagesGenerated > 1) {
+              finalCostCents = (generation.cost_cents || 0) * numImagesGenerated
+              console.log(`[Generations API] Seedream 4.5 sequential: ${numImagesGenerated} images × ${generation.cost_cents}¢ = ${finalCostCents}¢`)
+            }
 
-              if (existingTx) {
-                console.log('[Generations API] Billing already processed by webhook, skipping:', generation.id)
-                // Update the generation to mark billing complete (sync with webhook)
-                await sbAdmin
-                  .from('generations')
-                  .update({
-                    output_metadata: {
-                      ...existingMetadata,
-                      billing_complete: true,
-                      billed_via: 'webhook',
-                    },
-                  })
-                  .eq('id', generation.id)
-              } else {
-                console.log('[Generations API] Processing billing for generation:', generation.id)
+            // === BILLING via atomic RPC ===
+            // Fast-path skip when billing_status is already terminal.
+            const terminalBillingStatuses = ['charged', 'waived', 'refunded']
+            const alreadyBilled = terminalBillingStatuses.includes(
+              (generation.billing_status as string) || 'pending'
+            )
 
-              // === SEQUENTIAL GENERATION: Calculate correct cost ===
-              // For Seedream 4.5 sequential generation, multiply base cost by number of images
-              const numImagesGenerated = permanentUrls.length
-              let finalCostCents = generation.cost_cents
-
-              if (generation.model_slug === 'seedream-4.5' && numImagesGenerated > 1) {
-                finalCostCents = generation.cost_cents * numImagesGenerated
-                console.log(`[Generations API] Seedream 4.5 sequential: ${numImagesGenerated} images × ${generation.cost_cents}¢ = ${finalCostCents}¢`)
-              }
-
-              // Check for lifetime access
-              const { data: userProfile } = await sbAdmin
-                .from('user_profiles')
-                .select('id, lifetime_access')
-                .eq('id', generation.user_id)
-                .single()
-
-              const hasLifetimeAccess = userProfile?.lifetime_access || false
-
-              // Deduct balance if not lifetime user
-              if (!hasLifetimeAccess) {
-                const { data: deductResult, error: deductError } = await sbAdmin.rpc(
-                  'deduct_balance_safely',
-                  { p_user_id: generation.user_id, p_amount: finalCostCents }
-                )
-                if (deductError) {
-                  console.error('[Generations API] Failed to deduct balance:', deductError)
-                } else if (!deductResult?.success) {
-                  console.error('[Generations API] Balance deduction failed:', deductResult?.error)
-                } else {
-                  console.log(`[Generations API] Deducted ${finalCostCents} cents. New balance: ${deductResult.new_balance}`)
-                }
-              }
-
-              // Log transaction - include generation_id for race condition detection
-              const effectiveCost = hasLifetimeAccess ? 0 : finalCostCents
-              const { error: txError } = await sbAdmin.from('credit_transactions').insert({
-                user_id: generation.whop_user_id,
-                type: 'PersonaForge',
-                amount: -effectiveCost / 100,
-                amount_charged: effectiveCost / 100,
-                app_name: 'Skinny Studio',
-                task: generation.model_category === 'video' ? 'Video Generation' : 'Image Generation',
-                status: 'completed',
-                preview: permanentUrls[0],
-                metadata: {
-                  generation_id: generation.id, // For race condition detection
-                  model: generation.model_slug,
-                  prompt: generation.prompt,
-                  completed_via_polling: true,
-                  is_lifetime_user: hasLifetimeAccess,
-                  images_generated: numImagesGenerated,
-                  // Seedream 4.5 sequential pricing breakdown
-                  ...(generation.model_slug === 'seedream-4.5' && numImagesGenerated > 1 && {
-                    sequential_mode: true,
-                    cost_per_image_cents: generation.cost_cents,
-                    total_cost_cents: finalCostCents,
-                  }),
-                },
-              })
-
-              if (txError) {
-                console.error('[Generations API] Failed to log transaction:', txError)
-              } else {
-                console.log('[Generations API] Transaction logged successfully')
-              }
-
-              // Update generation with correct cost and billing_complete flag
-              await sbAdmin
-                .from('generations')
-                .update({
-                  cost_cents: finalCostCents, // Update to actual charged amount
-                  output_metadata: {
+            // Note: we call the RPC even when finalCostCents === 0. The RPC handles the
+            // zero-cost case by recording a $0 charged tx and marking billing_status
+            // terminal — keeps state machines consistent across paths.
+            if (!alreadyBilled && generation.user_id) {
+              const { data: billResult, error: billError } = await sbAdmin.rpc(
+                'complete_generation_billing',
+                {
+                  p_generation_id: generation.id,
+                  p_user_profile_id: generation.user_id,
+                  p_whop_user_id: generation.whop_user_id,
+                  p_amount_cents: finalCostCents,
+                  p_model_slug: generation.model_slug,
+                  p_model_category: generation.model_category,
+                  p_preview_url: permanentUrls[0] || null,
+                  p_extra_metadata: {
+                    prompt: generation.prompt,
                     images_generated: numImagesGenerated,
-                    billing_complete: true,
-                    billed_at: new Date().toISOString(),
-                    billed_via: 'polling_endpoint',
-                    billed_amount_cents: effectiveCost,
-                    // Seedream 4.5 sequential info
                     ...(generation.model_slug === 'seedream-4.5' && numImagesGenerated > 1 && {
                       sequential_mode: true,
                       cost_per_image_cents: generation.cost_cents,
+                      total_cost_cents: finalCostCents,
                     }),
                   },
-                })
-                .eq('id', generation.id)
+                  p_path: 'poll',
+                }
+              )
 
-              console.log(`[Generations API] Billing complete for generation ${generation.id}: ${finalCostCents}¢`)
-              } // end else (no existing transaction)
+              if (billError) {
+                console.error('[Generations API] Billing RPC error:', billError)
+              } else {
+                console.log(`[Generations API] Billing RPC: ${billResult?.status}`, billResult)
+                if (billResult?.status === 'insufficient_balance') {
+                  console.warn(`[Generations API] Insufficient balance for gen ${generation.id}; marked billing_status=failed`)
+                }
+              }
+            }
+
+            // Record the final cost on the generation row (separate from billed_amount_cents owned by RPC).
+            if (finalCostCents !== generation.cost_cents) {
+              await sbAdmin
+                .from('generations')
+                .update({ cost_cents: finalCostCents })
+                .eq('id', generation.id)
             }
 
             // Return updated generation

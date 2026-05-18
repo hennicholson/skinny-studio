@@ -229,7 +229,7 @@ export async function POST(request: Request) {
     for (let attempt = 1; attempt <= 3; attempt++) {
       const result = await sbAdmin
         .from('generations')
-        .select('id, whop_user_id, user_id, model_slug, model_category, prompt, cost_cents, replicate_status, output_metadata')
+        .select('id, whop_user_id, user_id, model_slug, model_category, prompt, cost_cents, replicate_status, billing_status')
         .eq('replicate_prediction_id', predictionId)
         .maybeSingle()
 
@@ -253,102 +253,23 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true, message: 'No matching generation' })
     }
 
-    console.log('[Webhook] Found generation:', generation.id, 'model:', generation.model_slug)
+    console.log('[Webhook] Found generation:', generation.id, 'model:', generation.model_slug, 'billing_status:', generation.billing_status)
 
-    // Check existing metadata for billing status
-    const existingMetadata = generation.output_metadata as Record<string, any> || {}
+    // Skip if already settled. billing_status is the authoritative source post-migration.
+    // (The RPC also fast-paths this — checking here saves an unnecessary call.)
+    if (
+      generation.billing_status === 'charged' ||
+      generation.billing_status === 'waived' ||
+      generation.billing_status === 'refunded'
+    ) {
+      console.log('[Webhook] Generation already settled:', generation.id, generation.billing_status)
+      return NextResponse.json({ ok: true, message: 'Already settled' })
+    }
 
-    // Skip if failed
+    // Skip if Replicate itself already failed.
     if (generation.replicate_status === 'failed') {
       console.log('[Webhook] Generation already failed:', generation.id)
       return NextResponse.json({ ok: true, message: 'Already failed' })
-    }
-
-    // Skip if succeeded AND billing was already completed by generate route
-    if (generation.replicate_status === 'succeeded' && existingMetadata.billing_complete) {
-      console.log('[Webhook] Generation already processed with billing:', generation.id)
-      return NextResponse.json({ ok: true, message: 'Already processed with billing' })
-    }
-
-    // If status is succeeded but no billing, we need to handle billing (recovery case)
-    const needsBillingOnly = generation.replicate_status === 'succeeded' && !existingMetadata.billing_complete
-
-    // Handle billing-only recovery case (generate route succeeded but didn't bill)
-    if (needsBillingOnly) {
-      console.log('[Webhook] Recovery mode: Generation succeeded but billing incomplete, processing billing only')
-
-      // Get the existing output_urls from the generation record
-      const { data: fullGen } = await sbAdmin
-        .from('generations')
-        .select('output_urls, cost_cents')
-        .eq('id', generation.id)
-        .single()
-
-      const permanentUrls = fullGen?.output_urls || []
-      const numImagesGenerated = permanentUrls.length || 1
-      const finalCostCents = generation.model_slug === 'seedream-4.5' && numImagesGenerated > 1
-        ? (generation.cost_cents || 0) * numImagesGenerated
-        : (generation.cost_cents || 0)
-
-      // Do billing
-      if (generation.user_id && finalCostCents > 0) {
-        const { data: userProfile } = await sbAdmin
-          .from('user_profiles')
-          .select('id, lifetime_access')
-          .eq('id', generation.user_id)
-          .single()
-
-        const hasLifetimeAccess = userProfile?.lifetime_access || false
-
-        if (!hasLifetimeAccess) {
-          const { data: deductResult, error: deductError } = await sbAdmin.rpc(
-            'deduct_balance_safely',
-            { p_user_id: generation.user_id, p_amount: finalCostCents }
-          )
-          if (deductError) {
-            console.error('[Webhook] Recovery billing failed:', deductError)
-          } else {
-            console.log('[Webhook] Recovery billing succeeded:', finalCostCents, 'cents')
-          }
-        }
-
-        // Log transaction
-        const effectiveCost = hasLifetimeAccess ? 0 : finalCostCents
-        await sbAdmin.from('credit_transactions').insert({
-          user_id: generation.whop_user_id,
-          type: 'PersonaForge',
-          amount: -effectiveCost / 100,
-          amount_charged: effectiveCost / 100,
-          app_name: 'Skinny Studio',
-          task: generation.model_category === 'video' ? 'Video Generation' : 'Image Generation',
-          status: 'completed',
-          preview: permanentUrls[0],
-          metadata: { model: generation.model_slug, recovery_billing: true },
-        })
-
-        // Mark billing complete and update cost_cents to final amount
-        await sbAdmin
-          .from('generations')
-          .update({
-            cost_cents: finalCostCents, // Update to actual charged amount
-            output_metadata: {
-              ...existingMetadata,
-              images_generated: numImagesGenerated,
-              billing_complete: true,
-              billed_at: new Date().toISOString(),
-              billed_via: 'webhook_recovery',
-              billed_amount_cents: effectiveCost,
-              // Seedream 4.5 sequential info
-              ...(generation.model_slug === 'seedream-4.5' && numImagesGenerated > 1 && {
-                sequential_mode: true,
-                cost_per_image_cents: generation.cost_cents,
-              }),
-            },
-          })
-          .eq('id', generation.id)
-      }
-
-      return NextResponse.json({ ok: true, message: 'Recovery billing completed' })
     }
 
     if (status === 'succeeded') {
@@ -393,7 +314,9 @@ export async function POST(request: Request) {
           total_cost_cents: finalCostCents,
           output_metadata: {
             images_generated: numImagesGenerated,
-            completed_via_webhook: true,
+            // Note: billing flags (billing_complete / completed_via_webhook) are
+            // no longer written here — generations.billing_status is the source
+            // of truth and is set by complete_generation_billing() below.
           },
         })
         .eq('id', generation.id)
@@ -404,100 +327,65 @@ export async function POST(request: Request) {
         console.log('[Webhook] Successfully updated generation:', generation.id)
       }
 
-      // === BILLING: Deduct balance and log transaction ===
-      if (generation.user_id && finalCostCents > 0) {
-        // RACE CONDITION FIX: Check if a transaction already exists for this generation
-        // This prevents double-billing when webhook and polling run simultaneously
-        const { data: existingTx } = await sbAdmin
-          .from('credit_transactions')
-          .select('id')
-          .eq('user_id', generation.whop_user_id)
-          .contains('metadata', { generation_id: generation.id })
-          .maybeSingle()
+      // === ATOMIC BILLING (debit + tx + flag in one RPC) ===
+      // Idempotent: if generate route or poll function already billed, RPC
+      // fast-paths to 'already_billed'. Concurrent caller -> 'already_billed_race'.
+      if (generation.user_id) {
+        const extraMetadata: Record<string, any> = {
+          prompt: generation.prompt,
+          images_generated: numImagesGenerated,
+          completed_via: 'webhook',
+          ...(generation.model_slug === 'seedream-4.5' && numImagesGenerated > 1 && {
+            sequential_mode: true,
+            cost_per_image_cents: generation.cost_cents,
+            total_cost_cents: finalCostCents,
+          }),
+        }
 
-        if (existingTx) {
-          console.log('[Webhook] Billing already processed by polling, skipping:', generation.id)
-        } else {
-          // Get user profile to check for lifetime access
-          const { data: userProfile } = await sbAdmin
-            .from('user_profiles')
-            .select('id, lifetime_access, balance_cents')
-            .eq('id', generation.user_id)
-            .single()
-
-          const hasLifetimeAccess = userProfile?.lifetime_access || false
-
-          // Deduct balance if not a lifetime user
-          if (!hasLifetimeAccess) {
-            const { data: deductResult, error: deductError } = await sbAdmin.rpc(
-              'deduct_balance_safely',
-              {
-                p_user_id: generation.user_id,
-                p_amount: finalCostCents
-              }
-            )
-
-            if (deductError) {
-              console.error('[Webhook] Failed to deduct balance:', deductError)
-            } else if (!deductResult?.success) {
-              console.error('[Webhook] Balance deduction failed:', deductResult?.error)
-            } else {
-              console.log('[Webhook] Successfully deducted', finalCostCents, 'cents. New balance:', deductResult.new_balance)
-            }
+        const { data: billingResult, error: billingError } = await sbAdmin.rpc(
+          'complete_generation_billing',
+          {
+            p_generation_id: generation.id,
+            p_user_profile_id: generation.user_id,
+            p_whop_user_id: generation.whop_user_id,
+            p_amount_cents: finalCostCents,
+            p_model_slug: generation.model_slug,
+            p_model_category: generation.model_category,
+            p_preview_url: permanentUrls[0] || null,
+            p_extra_metadata: extraMetadata,
+            p_path: 'webhook',
           }
+        )
 
-          // Log the transaction - include generation_id for race condition detection
-          const effectiveCost = hasLifetimeAccess ? 0 : finalCostCents
-          const amountInDollars = effectiveCost / 100
+        if (billingError) {
+          console.error('[Webhook] complete_generation_billing RPC error:', billingError)
+          // Return 200 — Replicate retries on 5xx and the next retry will hit
+          // the billing_status fast-path or re-attempt cleanly.
+          return NextResponse.json({ ok: true, billing: 'error' })
+        }
 
-          const { error: txError } = await sbAdmin.from('credit_transactions').insert({
-            user_id: generation.whop_user_id,
-            type: 'PersonaForge',  // Use PersonaForge type to avoid app_id constraint
-            amount: -amountInDollars,
-            amount_charged: amountInDollars,
-            app_name: 'Skinny Studio',
-            task: generation.model_category === 'video' ? 'Video Generation' : 'Image Generation',
-            status: 'completed',
-            preview: permanentUrls[0],
-            metadata: {
-              generation_id: generation.id, // For race condition detection
-              model: generation.model_slug,
-              prompt: generation.prompt,
-              category: generation.model_category,
-              is_lifetime_user: hasLifetimeAccess,
-              images_generated: numImagesGenerated,
-              completed_via_webhook: true,
-            },
-          })
-
-          if (txError) {
-            console.error('[Webhook] Failed to log transaction:', txError)
-          } else {
-            console.log('[Webhook] Successfully logged transaction')
-          }
-
-          // === MARK BILLING AS COMPLETE ===
-          // This prevents duplicate billing if webhook is called again
-          await sbAdmin
-            .from('generations')
-            .update({
-              output_metadata: {
-                images_generated: numImagesGenerated,
-                completed_via_webhook: true,
-                billing_complete: true,
-                billed_at: new Date().toISOString(),
-                billed_amount_cents: hasLifetimeAccess ? 0 : finalCostCents,
-                // Seedream 4.5 sequential info
-                ...(generation.model_slug === 'seedream-4.5' && numImagesGenerated > 1 && {
-                  sequential_mode: true,
-                  cost_per_image_cents: generation.cost_cents,
-                }),
-              },
-            })
-            .eq('id', generation.id)
-
-          console.log(`[Webhook] Marked billing as complete for generation ${generation.id}: ${finalCostCents}¢`)
-        } // end else (no existing transaction)
+        const billingStatus = (billingResult as any)?.status
+        switch (billingStatus) {
+          case 'charged':
+          case 'waived':
+            console.log(`[Webhook] Billing ${billingStatus} for ${generation.id}: tx ${(billingResult as any).tx_id}, billed ${(billingResult as any).billed_amount_cents}¢`)
+            break
+          case 'already_billed':
+          case 'already_billed_race':
+            console.log(`[Webhook] Billing ${billingStatus} for ${generation.id} — converged on prior result.`)
+            break
+          case 'insufficient_balance':
+            // Generation is marked 'failed' in DB by the RPC. Don't 5xx —
+            // Replicate would retry forever and we'd just keep landing here.
+            console.warn(`[Webhook] Insufficient balance billing ${generation.id}: have ${(billingResult as any).balance_cents}, need ${(billingResult as any).required_cents}. Marked billing_status=failed.`)
+            break
+          case 'user_not_found':
+          case 'generation_not_found':
+          case 'invalid_args':
+          default:
+            console.error(`[Webhook] complete_generation_billing returned ${billingStatus} for ${generation.id}:`, billingResult)
+            break
+        }
       }
 
     } else if (status === 'failed' || status === 'canceled') {

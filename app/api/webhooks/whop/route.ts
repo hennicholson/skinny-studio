@@ -56,30 +56,48 @@ export async function POST(request: Request) {
 
     console.log("Whop webhook received:", eventType)
 
-    // IDEMPOTENCY CHECK: Skip if already processed
+    // IDEMPOTENCY: rely on webhook_events.event_id UNIQUE constraint (added by
+    // the 20260516221608_atomic_billing migration). Plain INSERT; the constraint
+    // raises Postgres error code 23505 (unique_violation) on duplicate delivery.
+    // This is more portable than depending on PostgREST's "empty array means
+    // conflict" semantics for upsert+ignoreDuplicates.
+    //
+    // If the migration's UNIQUE constraint is somehow missing, this insert will
+    // succeed on duplicates and we'll fall through to handlePaymentSuccess. The
+    // downstream apply_topup_credit RPC's idempotency_key index is the second
+    // line of defense — it will reject duplicate credits regardless.
     if (event.id) {
-      const { data: existing } = await sbAdmin
-        .from("webhook_events")
-        .select("processed")
-        .eq("event_id", event.id)
-        .eq("processed", true)
-        .maybeSingle()
+      const { error: insertError } = await sbAdmin.from("webhook_events").insert({
+        event_source: "whop",
+        event_id: event.id,
+        event_type: eventType,
+        signature_valid: !!signature,
+        payload: event,
+        processed: false,
+      })
 
-      if (existing) {
-        console.log("Webhook already processed, skipping:", event.id)
-        return NextResponse.json({ received: true, duplicate: true })
+      if (insertError) {
+        if (insertError.code === "23505") {
+          // unique_violation on event_id → already processed, exit cleanly.
+          console.log("Webhook already recorded, skipping:", event.id)
+          return NextResponse.json({ received: true, duplicate: true })
+        }
+        // Any other DB error: log and fall through. apply_topup_credit is still
+        // idempotent on idempotency_key, so even if we re-process a payment
+        // event the user can't be double-credited.
+        console.error("Failed to record webhook event:", insertError)
       }
+    } else {
+      // No event id — log without idempotency guarantee.
+      await sbAdmin.from("webhook_events").insert({
+        event_source: "whop",
+        event_id: null,
+        event_type: eventType,
+        signature_valid: !!signature,
+        payload: event,
+        processed: false,
+      })
     }
-
-    // Log webhook event
-    await sbAdmin.from("webhook_events").insert({
-      event_source: "whop",
-      event_id: event.id || null,
-      event_type: eventType,
-      signature_valid: !!signature,
-      payload: event,
-      processed: false,
-    })
 
     // Handle different event types
     switch (eventType) {
@@ -128,15 +146,15 @@ async function handlePaymentSuccess(event: any) {
     return
   }
 
-  // Check if we have metadata from checkout configuration (in-app purchase)
-  // The metadata contains the whop_user_id and credits from the charge route
+  // Check if we have metadata from checkout configuration (in-app purchase).
+  // The metadata contains the whop_user_id from the charge route. We previously
+  // also threaded a profile_id through here for direct lookup, but the new
+  // apply_topup_credit RPC keys on whop_user_id and auto-creates / locks the
+  // profile internally, so profile_id is no longer needed.
   let whopUserId: string
-  let profileId: string | null = null
 
   if (metadata.whop_user_id) {
-    // Use the whop_user_id from metadata (set during checkout creation)
     whopUserId = metadata.whop_user_id
-    profileId = metadata.profile_id || null
     console.log("Using whop_user_id from metadata:", whopUserId)
   } else {
     // Generate the UUID we use internally
@@ -175,81 +193,76 @@ async function handlePaymentSuccess(event: any) {
     planName = `$${amount} Top-up`
   }
 
-  // Get or create user profile
-  let { data: profile } = await sbAdmin
-    .from("user_profiles")
-    .select("*")
-    .eq("whop_user_id", whopUserId)
-    .maybeSingle()
-
-  // If not found by whop_user_id and we have profile_id, try that
-  if (!profile && profileId) {
-    const { data: profileById } = await sbAdmin
-      .from("user_profiles")
-      .select("*")
-      .eq("id", profileId)
-      .maybeSingle()
-    profile = profileById
+  // === ATOMIC TOPUP (credit + tx + idempotency in one RPC) ===
+  // apply_topup_credit auto-creates the user_profile via INSERT ... ON CONFLICT
+  // DO NOTHING (relies on user_profiles_whop_user_id_key unique constraint).
+  // Replaces the legacy "lookup + manual insert + balance UPDATE + tx insert" dance.
+  if (!event.id) {
+    console.error("Cannot credit topup without event.id (RPC requires it as idempotency key)")
+    return
   }
 
-  if (!profile) {
-    // Create profile
-    const { data: newProfile, error } = await sbAdmin
-      .from("user_profiles")
-      .insert({
-        whop_user_id: whopUserId,
-        whop_unique_id: userId,
-        balance_cents: 0,
-        lifetime_access: false,
-      })
-      .select()
-      .single()
+  if (creditsToAdd > 0) {
+    const { data: creditResult, error: creditError } = await sbAdmin.rpc(
+      "apply_topup_credit",
+      {
+        p_whop_user_id: whopUserId,
+        p_whop_event_id: event.id,
+        p_credits_cents: creditsToAdd,
+        p_plan_name: planName,
+        p_extra_metadata: {
+          event_type: event.action,
+          plan_id: planId,
+          product_id: productId,
+        },
+      }
+    )
 
-    if (error) {
-      console.error("Error creating profile:", error)
+    if (creditError) {
+      console.error("apply_topup_credit RPC error:", creditError)
       return
     }
-    profile = newProfile
+
+    const status = (creditResult as any)?.status
+    switch (status) {
+      case "credited":
+        console.log(
+          `Added ${creditsToAdd} cents to user ${whopUserId}, new balance: ${(creditResult as any).new_balance_cents} (tx ${(creditResult as any).tx_id})`
+        )
+        break
+      case "already_credited":
+        console.log(`Duplicate Whop event ignored: ${event.id} (tx ${(creditResult as any).tx_id})`)
+        break
+      case "user_not_found":
+      case "invalid_args":
+      default:
+        console.error(`apply_topup_credit returned ${status}:`, creditResult)
+        return
+    }
   }
 
-  // Add credits
-  if (creditsToAdd > 0) {
-    const newBalance = (profile.balance_cents || 0) + creditsToAdd
-
-    await sbAdmin
-      .from("user_profiles")
-      .update({
-        balance_cents: newBalance,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", profile.id)
-
-    // Log transaction
-    await sbAdmin.from("credit_transactions").insert({
-      user_id: whopUserId,
-      type: "topup",
-      amount: creditsToAdd,
-      amount_credited: creditsToAdd,
-      app_name: "Skinny Studio",
-      task: planName,
-      status: "completed",
-      external_ref: event.id,
-      metadata: { event_type: event.action, plan_id: planId, product_id: productId },
-    })
-
-    console.log(`Added ${creditsToAdd} cents to user ${whopUserId}, new balance: ${newBalance}`)
-  }
-
-  // Check if this is a lifetime access purchase
+  // Lifetime access flag is unrelated to balance crediting and isn't covered
+  // by the RPC — keep the manual update. Resolve the profile id first (the
+  // RPC may have auto-created it, so we look it up by whop_user_id).
   if (planName.toLowerCase().includes("lifetime") || productId?.includes("lifetime")) {
-    await sbAdmin
+    const { data: profileForLifetime } = await sbAdmin
       .from("user_profiles")
-      .update({
-        lifetime_access: true,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", profile.id)
+      .select("id")
+      .eq("whop_user_id", whopUserId)
+      .maybeSingle()
 
-    console.log(`Granted lifetime access to user ${whopUserId}`)
+    if (profileForLifetime) {
+      await sbAdmin
+        .from("user_profiles")
+        .update({
+          lifetime_access: true,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", profileForLifetime.id)
+
+      console.log(`Granted lifetime access to user ${whopUserId}`)
+    } else {
+      console.error(`Cannot grant lifetime: profile not found for ${whopUserId}`)
+    }
   }
 }

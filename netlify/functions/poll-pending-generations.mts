@@ -100,13 +100,19 @@ export default async (req: Request) => {
   }
 
   try {
-    // Find generations stuck in "starting" status that have replicate_prediction_id
-    // These are generations where the function timed out
+    // Find generations that still need work. Two shapes:
+    //   1. replicate_status='starting' — function timed out before Replicate finished;
+    //      we need to poll Replicate, save outputs, then bill.
+    //   2. replicate_status='succeeded' AND billing_status='pending' — STRANDED. The
+    //      sync /api/generate path flipped replicate_status to 'succeeded' but the
+    //      atomic billing RPC errored transiently (Supabase 5xx, statement_timeout),
+    //      leaving the row un-billed. Without this branch, Replicate doesn't redeliver
+    //      and the row is invisible to recovery — silent revenue leak.
     const { data: pendingGenerations, error: fetchError } = await sbAdmin
       .from('generations')
-      .select('id, replicate_prediction_id, whop_user_id, user_id, cost_cents, model_slug, model_category, prompt')
-      .eq('replicate_status', 'starting')
+      .select('id, replicate_prediction_id, whop_user_id, user_id, cost_cents, model_slug, model_category, prompt, billing_status, replicate_status, output_urls')
       .not('replicate_prediction_id', 'is', null)
+      .or('replicate_status.eq.starting,and(replicate_status.eq.succeeded,billing_status.eq.pending)')
       .order('created_at', { ascending: false })
       .limit(20)
 
@@ -130,139 +136,153 @@ export default async (req: Request) => {
       if (!generation.replicate_prediction_id) continue
 
       try {
-        // Get prediction status from Replicate
-        const prediction = await replicate.predictions.get(generation.replicate_prediction_id)
-        console.log(`[Poll Pending] Prediction ${generation.replicate_prediction_id} status: ${prediction.status}`)
+        // Stranded-row fast path: replicate_status='succeeded' + billing_status='pending'
+        // means the sync /api/generate path already saved outputs but the atomic billing
+        // RPC errored transiently. We skip the Replicate fetch + storage re-upload and
+        // jump straight to billing, reusing the existing permanent output_urls.
+        const isStranded =
+          generation.replicate_status === 'succeeded' &&
+          generation.billing_status === 'pending' &&
+          Array.isArray(generation.output_urls) &&
+          generation.output_urls.length > 0
 
-        if (prediction.status === 'succeeded') {
-          // Extract output URLs
-          const outputUrls = extractOutputUrls(prediction.output)
+        let permanentUrls: string[]
 
-          if (outputUrls.length === 0) {
+        if (isStranded) {
+          console.log(`[Poll Pending] Stranded gen ${generation.id} — billing only.`)
+          permanentUrls = generation.output_urls as string[]
+        } else {
+          // Get prediction status from Replicate
+          const prediction = await replicate.predictions.get(generation.replicate_prediction_id)
+          console.log(`[Poll Pending] Prediction ${generation.replicate_prediction_id} status: ${prediction.status}`)
+
+          if (prediction.status === 'succeeded') {
+            // Extract output URLs
+            const outputUrls = extractOutputUrls(prediction.output)
+
+            if (outputUrls.length === 0) {
+              await sbAdmin
+                .from('generations')
+                .update({
+                  replicate_status: 'failed',
+                  replicate_error: 'No output URLs returned',
+                  completed_at: new Date().toISOString(),
+                })
+                .eq('id', generation.id)
+              failedCount++
+              continue
+            }
+
+            // Upload images to permanent storage
+            permanentUrls = []
+            for (const tempUrl of outputUrls) {
+              const permanentUrl = await saveImageToStorage(tempUrl, generation.whop_user_id || undefined)
+              permanentUrls.push(permanentUrl || tempUrl)
+            }
+
+            // Update generation with success
             await sbAdmin
               .from('generations')
               .update({
-                replicate_status: 'failed',
-                replicate_error: 'No output URLs returned',
+                output_urls: permanentUrls,
+                replicate_status: 'succeeded',
                 completed_at: new Date().toISOString(),
               })
               .eq('id', generation.id)
-            failedCount++
-            continue
-          }
 
-          // Upload images to permanent storage
-          const permanentUrls: string[] = []
-          for (const tempUrl of outputUrls) {
-            const permanentUrl = await saveImageToStorage(tempUrl, generation.whop_user_id || undefined)
-            permanentUrls.push(permanentUrl || tempUrl)
-          }
-
-          // Update generation with success
-          await sbAdmin
-            .from('generations')
-            .update({
-              output_urls: permanentUrls,
-              replicate_status: 'succeeded',
-              completed_at: new Date().toISOString(),
-            })
-            .eq('id', generation.id)
-
-          console.log(`[Poll Pending] Updated generation ${generation.id} with ${permanentUrls.length} images`)
-
-          // === BILLING: Deduct balance and log transaction ===
-          if (generation.user_id && generation.cost_cents > 0) {
-            // Check for lifetime access
-            const { data: userProfile } = await sbAdmin
-              .from('user_profiles')
-              .select('id, lifetime_access')
-              .eq('id', generation.user_id)
-              .single()
-
-            const hasLifetimeAccess = userProfile?.lifetime_access || false
-
-            // Deduct balance if not lifetime user
-            if (!hasLifetimeAccess) {
-              const { data: deductResult, error: deductError } = await sbAdmin.rpc(
-                'deduct_balance_safely',
-                { p_user_id: generation.user_id, p_amount: generation.cost_cents }
-              )
-              if (deductError) {
-                console.error('[Poll Pending] Failed to deduct balance:', deductError)
-              } else if (!deductResult?.success) {
-                console.error('[Poll Pending] Balance deduction failed:', deductResult?.error)
-              } else {
-                console.log(`[Poll Pending] Deducted ${generation.cost_cents} cents. New balance: ${deductResult.new_balance}`)
-              }
-            }
-
-            // Log transaction
-            const effectiveCost = hasLifetimeAccess ? 0 : generation.cost_cents
-            const { error: txError } = await sbAdmin.from('credit_transactions').insert({
-              user_id: generation.whop_user_id,
-              type: 'PersonaForge',
-              amount: -effectiveCost / 100,
-              amount_charged: effectiveCost / 100,
-              app_name: 'Skinny Studio',
-              task: generation.model_category === 'video' ? 'Video Generation' : 'Image Generation',
-              status: 'completed',
-              preview: permanentUrls[0],
-              metadata: {
-                model: generation.model_slug,
-                prompt: generation.prompt,
-                completed_via_poll: true,
-                is_lifetime_user: hasLifetimeAccess,
-              },
-            })
-
-            if (txError) {
-              console.error('[Poll Pending] Failed to log transaction:', txError)
-            } else {
-              console.log('[Poll Pending] Transaction logged successfully')
-            }
-
-            // Update generation with billing_complete flag
+            console.log(`[Poll Pending] Updated generation ${generation.id} with ${permanentUrls.length} images`)
+          } else if (prediction.status === 'failed' || prediction.status === 'canceled') {
+            // Handle failure (moved up — same logic as before, kept here so the else-branch below
+            // doesn't fall through to billing).
             await sbAdmin
               .from('generations')
               .update({
-                output_metadata: {
-                  images_generated: permanentUrls.length,
-                  billing_complete: true,
-                  billed_at: new Date().toISOString(),
-                  billed_via: 'poll_function',
-                  billed_amount_cents: effectiveCost,
-                },
+                replicate_status: prediction.status,
+                replicate_error: prediction.error || 'Unknown error',
+                completed_at: new Date().toISOString(),
               })
               .eq('id', generation.id)
+            console.log(`[Poll Pending] Generation ${generation.id} failed: ${prediction.error}`)
+            failedCount++
+            continue
+          } else {
+            // Still processing (starting or processing)
+            if (prediction.status === 'processing') {
+              await sbAdmin
+                .from('generations')
+                .update({ replicate_status: 'processing' })
+                .eq('id', generation.id)
+            }
+            stillProcessingCount++
+            continue
+          }
+        }
 
-            console.log(`[Poll Pending] Billing complete for generation ${generation.id}`)
+        // ─── At this point we have permanentUrls and the gen is succeeded. Bill it. ───
+        {
+
+          // === ATOMIC BILLING (debit + tx + flag in one RPC) ===
+          // Idempotent: if /api/generate or the webhook beat us here, RPC returns
+          // 'already_billed' and nothing changes.
+          if (generation.user_id) {
+            const numImagesGenerated = permanentUrls.length
+            const finalCostCents = generation.model_slug === 'seedream-4.5' && numImagesGenerated > 1
+              ? (generation.cost_cents || 0) * numImagesGenerated
+              : (generation.cost_cents || 0)
+
+            const extraMetadata: Record<string, any> = {
+              prompt: generation.prompt,
+              images_generated: numImagesGenerated,
+              completed_via: 'poll',
+              ...(generation.model_slug === 'seedream-4.5' && numImagesGenerated > 1 && {
+                sequential_mode: true,
+                cost_per_image_cents: generation.cost_cents,
+                total_cost_cents: finalCostCents,
+              }),
+            }
+
+            const { data: billingResult, error: billingError } = await sbAdmin.rpc(
+              'complete_generation_billing',
+              {
+                p_generation_id: generation.id,
+                p_user_profile_id: generation.user_id,
+                p_whop_user_id: generation.whop_user_id,
+                p_amount_cents: finalCostCents,
+                p_model_slug: generation.model_slug,
+                p_model_category: generation.model_category,
+                p_preview_url: permanentUrls[0] || null,
+                p_extra_metadata: extraMetadata,
+                p_path: 'poll',
+              }
+            )
+
+            if (billingError) {
+              console.error('[Poll Pending] complete_generation_billing RPC error:', billingError)
+            } else {
+              const billingStatus = (billingResult as any)?.status
+              switch (billingStatus) {
+                case 'charged':
+                case 'waived':
+                  console.log(`[Poll Pending] Billing ${billingStatus} for ${generation.id}: tx ${(billingResult as any).tx_id}, billed ${(billingResult as any).billed_amount_cents}¢`)
+                  break
+                case 'already_billed':
+                case 'already_billed_race':
+                  console.log(`[Poll Pending] Billing ${billingStatus} for ${generation.id} — converged on prior result.`)
+                  break
+                case 'insufficient_balance':
+                  // RPC marks generations.billing_status='failed'. Poller will pick
+                  // it up again next cycle if balance gets topped up — but the
+                  // fast-path will then skip it (billing_status is terminal).
+                  // Operator can refund / manually re-process if needed.
+                  console.warn(`[Poll Pending] Insufficient balance billing ${generation.id}: have ${(billingResult as any).balance_cents}, need ${(billingResult as any).required_cents}.`)
+                  break
+                default:
+                  console.error(`[Poll Pending] complete_generation_billing returned ${billingStatus} for ${generation.id}:`, billingResult)
+              }
+            }
           }
 
           completedCount++
-
-        } else if (prediction.status === 'failed' || prediction.status === 'canceled') {
-          // Handle failure
-          await sbAdmin
-            .from('generations')
-            .update({
-              replicate_status: prediction.status,
-              replicate_error: prediction.error || 'Unknown error',
-              completed_at: new Date().toISOString(),
-            })
-            .eq('id', generation.id)
-
-          console.log(`[Poll Pending] Generation ${generation.id} failed: ${prediction.error}`)
-          failedCount++
-
-        } else {
-          // Still processing (starting or processing)
-          if (prediction.status === 'processing') {
-            await sbAdmin
-              .from('generations')
-              .update({ replicate_status: 'processing' })
-              .eq('id', generation.id)
-          }
-          stillProcessingCount++
         }
 
       } catch (predError: any) {
