@@ -830,25 +830,33 @@ function CanvasInner({
       if (files && files.length > 0) {
         e.preventDefault()
 
-        // Filter to images and validate. Skipped files get a per-file toast
-        // so the user knows why nothing landed for that drop entry.
+        // Split dropped files by media type. Images go to /api/upload-image
+        // and spawn reference-image nodes. Videos go to the timeline-uploads
+        // bucket (which already has a video-mime allowlist) and spawn
+        // reference-video nodes. Other types are rejected per file.
         const imageFiles: File[] = []
+        const videoFiles: File[] = []
+        const VIDEO_MAX_BYTES = 50 * 1024 * 1024 // 50MB cap on browser uploads
         for (let i = 0; i < files.length; i++) {
           const f = files[i]
-          // Folder children come through as Files too; filter on type so
-          // PDFs/videos/etc. dropped alongside images don't create nodes.
-          if (!f.type.startsWith('image/')) {
-            toast.error(`Skipped ${f.name || 'file'} — not an image`)
-            continue
+          if (f.type.startsWith('image/')) {
+            const v = validateImage(f)
+            if (!v.valid) {
+              toast.error(`Skipped ${f.name}: ${v.error || 'invalid image'}`)
+              continue
+            }
+            imageFiles.push(f)
+          } else if (f.type.startsWith('video/')) {
+            if (f.size > VIDEO_MAX_BYTES) {
+              toast.error(`${f.name} is too large (${Math.round(f.size / 1024 / 1024)}MB). Max 50MB.`)
+              continue
+            }
+            videoFiles.push(f)
+          } else {
+            toast.error(`Skipped ${f.name || 'file'} — not an image or video`)
           }
-          const v = validateImage(f)
-          if (!v.valid) {
-            toast.error(`Skipped ${f.name}: ${v.error || 'invalid image'}`)
-            continue
-          }
-          imageFiles.push(f)
         }
-        if (imageFiles.length === 0) return
+        if (imageFiles.length === 0 && videoFiles.length === 0) return
 
         // Drop dismisses welcome state if it's still showing — getting an
         // image onto an empty canvas is a clear "I'm ready to work" signal.
@@ -997,6 +1005,140 @@ function CanvasInner({
         // We don't await — the drop handler returns synchronously while
         // uploads + analyses progress in the background.
         void Promise.all(workers)
+
+        // ─── Video uploads (parallel branch) ─────────────────────────────
+        // Videos use the timeline-uploads bucket (already has the video MIME
+        // allowlist + signed-URL upload pattern) and create reference-video
+        // nodes. They show up in the timeline library too — single source of
+        // truth for user-uploaded video assets.
+        if (videoFiles.length > 0) {
+          const baseX2 = flowPos.x - 84 + imageFiles.length * 24
+          const baseY2 = flowPos.y - 90 + imageFiles.length * 24
+          const videoPending = videoFiles.map((file, i) => {
+            const localUrl = URL.createObjectURL(file)
+            const titleFromName = file.name.replace(/\.[^.]+$/, '')
+            const node = newNode(
+              'reference-video',
+              { x: baseX2 + i * 24, y: baseY2 + i * 24 },
+              {
+                videoUrl: localUrl,
+                title: titleFromName,
+                status: 'queued',
+              },
+            )
+            return { node, file, localUrl }
+          })
+          setRfNodes((nds) => [
+            ...nds,
+            ...videoPending.map(({ node }) => toRFNode(node)),
+          ])
+          let vCursor = 0
+          const runNextVideo = async (): Promise<void> => {
+            const i = vCursor++
+            if (i >= videoPending.length) return
+            const { node, file, localUrl } = videoPending[i]
+            const toastId = toast.loading(`Uploading ${file.name}…`)
+            try {
+              // Phase 1: sign
+              const signRes = await fetch(
+                `/api/canvas/${initial.id}/timeline/upload`,
+                {
+                  method: 'POST',
+                  headers: getWhopHeaders(),
+                  body: JSON.stringify({
+                    filename: file.name,
+                    contentType: file.type,
+                  }),
+                },
+              )
+              if (!signRes.ok) {
+                const t = await signRes.text().catch(() => '')
+                throw new Error(`init failed ${signRes.status} ${t}`)
+              }
+              const { signedUrl, storagePath } = (await signRes.json()) as {
+                signedUrl?: string
+                storagePath?: string
+              }
+              if (!signedUrl || !storagePath) {
+                throw new Error('server returned no upload url')
+              }
+              // Phase 2: PUT bytes
+              const putRes = await fetch(signedUrl, {
+                method: 'PUT',
+                headers: { 'content-type': file.type },
+                body: file,
+              })
+              if (!putRes.ok) throw new Error(`storage put failed ${putRes.status}`)
+              // Probe duration locally for the finalize call.
+              const duration = await new Promise<number>((resolve) => {
+                const v = document.createElement('video')
+                v.preload = 'metadata'
+                v.src = localUrl
+                v.onloadedmetadata = () => resolve(Number.isFinite(v.duration) ? v.duration : 0)
+                v.onerror = () => resolve(0)
+              })
+              // Phase 3: finalize → get the signed playback URL
+              const finRes = await fetch(
+                `/api/canvas/${initial.id}/timeline/upload/finalize`,
+                {
+                  method: 'POST',
+                  headers: getWhopHeaders(),
+                  body: JSON.stringify({
+                    storagePath,
+                    filename: file.name,
+                    contentType: file.type,
+                    durationSeconds: duration,
+                    sizeBytes: file.size,
+                  }),
+                },
+              )
+              if (!finRes.ok) throw new Error(`finalize failed ${finRes.status}`)
+              const finJson = (await finRes.json()) as {
+                upload?: { url?: string }
+              }
+              const httpsUrl = finJson.upload?.url
+              if (!httpsUrl) throw new Error('finalize returned no url')
+
+              setRfNodes((nds) =>
+                nds.map((rn) =>
+                  rn.id === node.id
+                    ? {
+                        ...rn,
+                        data: {
+                          ...rn.data,
+                          videoUrl: httpsUrl,
+                          status: 'idle',
+                          error: undefined,
+                        },
+                      }
+                    : rn,
+                ),
+              )
+              try {
+                URL.revokeObjectURL(localUrl)
+              } catch {
+                /* noop */
+              }
+              toast.success(`Saved ${file.name}`, { id: toastId })
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err)
+              setRfNodes((nds) =>
+                nds.map((rn) =>
+                  rn.id === node.id
+                    ? { ...rn, data: { ...rn.data, status: 'error', error: msg } }
+                    : rn,
+                ),
+              )
+              toast.error(`Upload failed: ${file.name}`, { id: toastId })
+            }
+            return runNextVideo()
+          }
+          const vWorkers = Array.from(
+            { length: Math.min(2, videoPending.length) },
+            () => runNextVideo(),
+          )
+          void Promise.all(vWorkers)
+        }
         return
       }
 
@@ -1014,7 +1156,7 @@ function CanvasInner({
       setRfNodes((nds) => [...nds, toRFNode(node)])
       toast.success('Saved to canvas as a reference')
     },
-    [screenToFlowPosition, rfNodes, rfEdges, getWhopHeaders, welcomeSeen],
+    [screenToFlowPosition, rfNodes, rfEdges, getWhopHeaders, welcomeSeen, initial.id],
   )
   const onAssetDragOver = useCallback((e: React.DragEvent) => {
     // The HTML5 drag API requires preventDefault on dragover for drop to fire.

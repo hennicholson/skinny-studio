@@ -21,6 +21,7 @@ import {
   Upload,
   FileAudio2,
   GripVertical,
+  Sparkles,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { TimelineUpload } from '@/lib/timeline/ir'
@@ -30,6 +31,17 @@ export interface CanvasVideoNodeLite {
   id: string
   type: string
   data: { title?: string; outputUrls?: string[] }
+}
+
+/** A past generation from the user's Skinny Hub (the `generations` table).
+ *  Carries the URL + duration so the library can render + drop it onto a
+ *  track without an extra DB call. */
+export interface HubVideoGen {
+  id: string               // generations.id
+  url: string              // public Storage URL
+  title: string            // prompt or model_slug, truncated
+  durationSeconds: number  // probed lazily; 0 means unknown until probed
+  createdAt: string
 }
 
 // MIME we set on the DataTransfer when dragging an item. The rail listens for
@@ -42,6 +54,10 @@ export type TimelineDragPayload =
 
 interface TimelineLibraryPanelProps {
   canvasNodes: CanvasVideoNodeLite[]
+  /** User's past video generations from Skinny Hub — rendered as draggable
+   *  rows so users can pull any prior gen onto the timeline, not just the
+   *  ones currently on this canvas. Empty array hides the section. */
+  hubVideoGens?: HubVideoGen[]
   uploads: TimelineUpload[]
   /** Called when the user clicks an item (or double-clicks) to add at the end
    *  of the appropriate track. Drag-and-drop bypasses this and goes through
@@ -56,6 +72,7 @@ interface TimelineLibraryPanelProps {
 
 export function TimelineLibraryPanel({
   canvasNodes,
+  hubVideoGens = [],
   uploads,
   onAdd,
   onUploadAudio,
@@ -106,6 +123,19 @@ export function TimelineLibraryPanel({
               <CanvasNodeRow key={node.id} node={node} onAdd={onAdd} />
             ))}
           </LibrarySection>
+
+          {/* Skinny Hub — past video gens from anywhere in the user's history */}
+          {hubVideoGens.length > 0 && (
+            <LibrarySection
+              label="Skinny Hub"
+              icon={<Sparkles className="h-3 w-3" />}
+              count={hubVideoGens.length}
+            >
+              {hubVideoGens.map((gen) => (
+                <HubGenRow key={gen.id} gen={gen} onAdd={onAdd} />
+              ))}
+            </LibrarySection>
+          )}
 
           {/* Uploaded video */}
           {videoUploads.length > 0 && (
@@ -230,6 +260,38 @@ function CanvasNodeRow({
     <LibraryRow
       thumbnail={<VideoThumb url={url} />}
       label={label}
+      sub={duration ? formatTimecode(duration, false) : '—'}
+      payload={payload}
+      onAdd={onAdd}
+    />
+  )
+}
+
+function HubGenRow({
+  gen,
+  onAdd,
+}: {
+  gen: HubVideoGen
+  onAdd?: (p: TimelineDragPayload) => void
+}) {
+  // If the gen carries no duration (some legacy rows), probe lazily.
+  const probed = useMediaDuration(gen.durationSeconds > 0 ? '' : gen.url, 'video')
+  const duration = gen.durationSeconds > 0 ? gen.durationSeconds : probed || 5
+  // Reuse the canvas-node source kind — semantically a Hub gen IS a past
+  // canvas-node, just not on THIS canvas right now. The synthetic `hub:` id
+  // prefix marks it for any future analytics without colliding with real
+  // node ids.
+  const payload: TimelineDragPayload = {
+    kind: 'canvas-node',
+    nodeId: `hub:${gen.id}`,
+    url: gen.url,
+    duration,
+    label: gen.title,
+  }
+  return (
+    <LibraryRow
+      thumbnail={<VideoThumb url={gen.url} />}
+      label={gen.title}
       sub={duration ? formatTimecode(duration, false) : '—'}
       payload={payload}
       onAdd={onAdd}

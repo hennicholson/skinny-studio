@@ -65,6 +65,7 @@ interface PaletteRow {
 const ICON_BY_TYPE: Record<NodeType, any> = {
   'text-prompt': Type,
   'reference-image': ImageIcon,
+  'reference-video': Film,
   entity: Users,
   skill: Sparkles,
   'image-gen': ImageIcon,
@@ -168,6 +169,14 @@ export function AddNodeModal({ open, onClose, onAdd, models, keepOpenDefault = f
         Icon: ICON_BY_TYPE['reference-image'],
         category: 'image',
         payload: { type: 'reference-image' },
+      },
+      {
+        key: 'reference-video',
+        name: 'Reference video',
+        hint: 'Upload your own video',
+        Icon: ICON_BY_TYPE['reference-video'],
+        category: 'video',
+        payload: { type: 'reference-video' },
       },
       {
         key: 'skill',

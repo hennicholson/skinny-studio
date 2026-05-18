@@ -237,6 +237,8 @@ function emit(node: CanvasNode, handleId: string): any {
       return interpolatePrompt(node.data.prompt || '', node)
     case 'reference-image':
       return node.data.imageUrl
+    case 'reference-video':
+      return node.data.videoUrl
     case 'entity': {
       // Emit per-handle:
       // - out:image  → the entity's saved image (used as a model reference)
@@ -697,6 +699,7 @@ async function executeNode(
   if (
     node.type === 'text-prompt' ||
     node.type === 'reference-image' ||
+    node.type === 'reference-video' ||
     node.type === 'entity' ||
     node.type === 'skill'
   ) {

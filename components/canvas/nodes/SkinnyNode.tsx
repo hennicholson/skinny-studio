@@ -78,6 +78,7 @@ function SkinnyNodeBase({ id, data, selected }: NodeProps<any>) {
     nodeType === 'image-gen' ||
     nodeType === 'video-gen' ||
     nodeType === 'reference-image' ||
+    nodeType === 'reference-video' ||
     nodeType === 'output' ||
     nodeType === 'fan-out' ||
     // Entity nodes show their reference image as the body when one is bound.
@@ -355,9 +356,15 @@ function MediaBody({
 
   // Resolve the URLs to show. Priority: current history entry → live
   // outputUrls (legacy / not-yet-persisted) → static imageUrl (reference node).
-  const urls = currentEntry?.urls || data.outputUrls || (data.imageUrl ? [data.imageUrl] : [])
+  const urls =
+    currentEntry?.urls ||
+    data.outputUrls ||
+    ((data as any).videoUrl ? [(data as any).videoUrl] : null) ||
+    (data.imageUrl ? [data.imageUrl] : [])
   const isVideo =
-    nodeType === 'video-gen' || (urls[0]?.match(/\.(mp4|webm|mov)(\?|$)/i) ? true : false)
+    nodeType === 'video-gen' ||
+    nodeType === 'reference-video' ||
+    (urls[0]?.match(/\.(mp4|webm|mov)(\?|$)/i) ? true : false)
   const hasContent = urls.length > 0
   const showPagination = totalRuns > 1 && (nodeType === 'image-gen' || nodeType === 'video-gen')
 

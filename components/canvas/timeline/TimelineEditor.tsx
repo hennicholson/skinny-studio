@@ -49,6 +49,7 @@ import { ShortcutsCheatsheet } from './ShortcutsCheatsheet'
 import {
   TimelineLibraryPanel,
   type CanvasVideoNodeLite,
+  type HubVideoGen,
   type TimelineDragPayload,
 } from './TimelineLibraryPanel'
 import { MIN_ZOOM, MAX_ZOOM } from './timeline-constants'
@@ -113,6 +114,7 @@ function TimelineEditorInner({ canvasVideoNodes = [], onAddRenderToCanvas, onSwi
   } = useTimeline()
 
   const [zoom, setZoom] = useState(1)
+  const [hubVideoGens, setHubVideoGens] = useState<HubVideoGen[]>([])
   const [tool, setTool] = useState<'select' | 'razor'>('select')
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [libraryCollapsed, setLibraryCollapsed] = useState(false)
@@ -129,6 +131,50 @@ function TimelineEditorInner({ canvasVideoNodes = [], onAddRenderToCanvas, onSwi
     window.addEventListener('resize', check)
     return () => window.removeEventListener('resize', check)
   }, [])
+
+  // Fetch the user's Skinny Hub video generations once on mount. These appear
+  // as a separate library section alongside this canvas's own video-gen
+  // outputs, so users can pull ANY prior gen onto the timeline.
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/users/generations?status=succeeded&limit=50', {
+      headers: getWhopHeaders(),
+    })
+      .then(async (res) => {
+        if (!res.ok || cancelled) return
+        const json = (await res.json()) as {
+          generations?: Array<{
+            id: string
+            output_urls?: string[]
+            prompt?: string
+            model_slug?: string
+            model_category?: string
+            created_at?: string
+          }>
+        }
+        const vids: HubVideoGen[] = (json.generations || [])
+          .filter(
+            (g) =>
+              g.model_category === 'video' &&
+              Array.isArray(g.output_urls) &&
+              g.output_urls.length > 0,
+          )
+          .map((g) => ({
+            id: g.id,
+            url: g.output_urls![0],
+            title: (g.prompt || g.model_slug || 'Video').slice(0, 60),
+            durationSeconds: 0, // probed lazily by the row
+            createdAt: g.created_at || '',
+          }))
+        if (!cancelled) setHubVideoGens(vids)
+      })
+      .catch(() => {
+        /* Hub is a nice-to-have; silent failure is fine */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [getWhopHeaders])
 
   // Re-open drawer when a new clip is selected (desktop only).
   useEffect(() => {
@@ -398,6 +444,7 @@ function TimelineEditorInner({ canvasVideoNodes = [], onAddRenderToCanvas, onSwi
         {/* Left: persistent asset library */}
         <TimelineLibraryPanel
           canvasNodes={canvasVideoNodes}
+          hubVideoGens={hubVideoGens}
           uploads={timeline.uploads}
           onAdd={onLibraryAdd}
           onUploadAudio={() => audioPickRef.current?.()}

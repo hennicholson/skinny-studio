@@ -538,6 +538,7 @@ function NodeTypeBadge({ type }: { type: NodeType }) {
   const map: Record<NodeType, { Icon: React.ComponentType<{ size?: number; className?: string }>; tint: string }> = {
     'text-prompt': { Icon: FileText, tint: 'text-zinc-300' },
     'reference-image': { Icon: ImageIcon, tint: 'text-zinc-300' },
+    'reference-video': { Icon: Film, tint: 'text-zinc-300' },
     entity: { Icon: Box, tint: 'text-zinc-300' },
     skill: { Icon: Sparkles, tint: 'text-skinny-yellow' },
     'image-gen': { Icon: ImageIcon, tint: 'text-zinc-300' },
@@ -565,6 +566,7 @@ function sortForMobile(nodes: CanvasNode[]): CanvasNode[] {
     'text-prompt': 1,
     skill: 1,
     'reference-image': 1,
+    'reference-video': 1,
     entity: 1,
     orchestrator: 2,
     'production-brief': 2,

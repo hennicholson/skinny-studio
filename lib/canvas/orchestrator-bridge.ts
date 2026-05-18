@@ -54,6 +54,12 @@ function describeNode(n: CanvasNode): string {
       return `- ${idTag} ${def.label}${titleSuffix}${status}: ${status_str}${visionLine}`
     }
 
+    case 'reference-video': {
+      const videoUrl = (n.data as any).videoUrl as string | undefined
+      const status_str = videoUrl ? '[video attached]' : '[empty]'
+      return `- ${idTag} ${def.label}${titleSuffix}${status}: ${status_str}`
+    }
+
     case 'entity': {
       const vc = (n.data as any).visionContext as string | undefined
       const visionLine = vc ? `\n    vision: ${truncate(vc, 220)}` : ''

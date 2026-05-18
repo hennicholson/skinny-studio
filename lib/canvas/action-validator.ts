@@ -102,6 +102,10 @@ const NODE_HANDLES: Record<
     inputs: {},
     outputs: { 'out:image': 'image' },
   },
+  'reference-video': {
+    inputs: {},
+    outputs: { 'out:video': 'video' },
+  },
   entity: {
     inputs: {},
     outputs: {

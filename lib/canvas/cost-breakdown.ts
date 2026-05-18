@@ -26,6 +26,7 @@ export interface NodeCostRow {
 const TYPE_LABEL: Record<NodeType, string> = {
   'text-prompt': 'Prompt',
   'reference-image': 'Reference',
+  'reference-video': 'Reference Video',
   entity: 'Entity',
   skill: 'Skill',
   'image-gen': 'Image Model',

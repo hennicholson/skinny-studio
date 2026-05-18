@@ -6,6 +6,7 @@
 export type NodeType =
   | 'text-prompt'
   | 'reference-image'
+  | 'reference-video'
   | 'entity'
   | 'skill'
   | 'image-gen'
@@ -45,6 +46,7 @@ export interface CanvasNode {
     // Static input node specifics
     prompt?: string                          // text-prompt
     imageUrl?: string                        // reference-image
+    videoUrl?: string                        // reference-video (uploaded user asset)
     entityId?: string                        // entity
     visionContext?: string                   // entity — description used as out:prompt
     skillId?: string                         // skill
@@ -143,6 +145,13 @@ export const NODE_TYPES: Record<NodeType, NodeTypeDef> = {
     category: 'input',
     inputs: [],
     outputs: [{ id: 'out:image', label: 'Image', type: 'image' }],
+  },
+  'reference-video': {
+    type: 'reference-video',
+    label: 'Reference Video',
+    category: 'input',
+    inputs: [],
+    outputs: [{ id: 'out:video', label: 'Video', type: 'video' }],
   },
   entity: {
     type: 'entity',
