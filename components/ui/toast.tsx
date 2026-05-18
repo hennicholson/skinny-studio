@@ -83,19 +83,32 @@ function ToastItem({ toast, onDismiss }: ToastProps) {
   )
 }
 
-// Version that uses context internally
+// Version that uses context internally.
+//
+// Mounted once at app shell. Errors get `aria-live="assertive"` so they
+// interrupt screen readers immediately; everything else is "polite" so
+// success / info / warning don't fight whatever the user is reading.
 export function ToastContainer() {
   const { toasts, removeToast } = useApp()
+  const hasError = toasts.some((t) => t.type === 'error')
 
   return (
-    <div className="fixed left-4 right-4 sm:left-auto sm:right-4 z-[100] flex flex-col gap-2 pb-safe" style={{ bottom: 'max(1rem, env(safe-area-inset-bottom))' }}>
+    <div
+      role="region"
+      aria-label="Notifications"
+      aria-live={hasError ? 'assertive' : 'polite'}
+      aria-atomic="false"
+      className="fixed left-4 right-4 sm:left-auto sm:right-4 z-[100] flex flex-col gap-2 pb-safe pointer-events-none"
+      style={{ bottom: 'max(1rem, env(safe-area-inset-bottom))' }}
+    >
       <AnimatePresence mode="popLayout">
         {toasts.map(toast => (
-          <ToastItem
-            key={toast.id}
-            toast={toast}
-            onDismiss={removeToast}
-          />
+          <div key={toast.id} className="pointer-events-auto">
+            <ToastItem
+              toast={toast}
+              onDismiss={removeToast}
+            />
+          </div>
         ))}
       </AnimatePresence>
     </div>
@@ -109,15 +122,23 @@ interface ToastContainerWithPropsProps {
 }
 
 export function ToastContainerWithProps({ toasts, onDismiss }: ToastContainerWithPropsProps) {
+  const hasError = toasts.some((t) => t.type === 'error')
   return (
-    <div className="fixed bottom-4 left-4 right-4 sm:left-auto sm:right-4 z-[100] flex flex-col gap-2">
+    <div
+      role="region"
+      aria-label="Notifications"
+      aria-live={hasError ? 'assertive' : 'polite'}
+      aria-atomic="false"
+      className="fixed bottom-4 left-4 right-4 sm:left-auto sm:right-4 z-[100] flex flex-col gap-2 pointer-events-none"
+    >
       <AnimatePresence mode="popLayout">
         {toasts.map(toast => (
-          <ToastItem
-            key={toast.id}
-            toast={toast}
-            onDismiss={onDismiss}
-          />
+          <div key={toast.id} className="pointer-events-auto">
+            <ToastItem
+              toast={toast}
+              onDismiss={onDismiss}
+            />
+          </div>
         ))}
       </AnimatePresence>
     </div>

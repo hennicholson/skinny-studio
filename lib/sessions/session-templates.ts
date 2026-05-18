@@ -81,9 +81,11 @@ const albumDropAssets: SessionAssetTemplate[] = [
     name: 'Visualizer Loop',
     description: 'Short video loop for music videos',
     aspectRatio: '16:9',
-    modelSuggestion: 'veo-3.1',
+    modelSuggestion: 'veo-3',
     skills: ['cinematic'],
     required: false,
+    mediaType: 'video',
+    duration: 5,
   },
 ]
 

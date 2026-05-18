@@ -10,6 +10,7 @@ import { selectedModelSupportsVision, getSelectedModel } from '@/lib/api-setting
 import { ModelSelector } from '@/components/ui/model-selector'
 import { ImageSourcePicker } from './image-source-picker'
 import { ImagePurposeModal } from './image-purpose-modal'
+import { ImageStorageModal } from './image-storage-modal'
 import { AnalysisPreviewModal } from './analysis-preview-modal'
 import { useApp } from '@/lib/context/app-context'
 import { useSkills, INTENT_SKILL_MAP } from '@/lib/context/skills-context'
@@ -39,6 +40,11 @@ export function ChatInput({
   const [supportsVision, setSupportsVision] = useState(false)
   const [showModelSelector, setShowModelSelector] = useState(false)
   const [showImagePicker, setShowImagePicker] = useState(false)
+
+  // Image storage modal state (shows first for local uploads)
+  const [showStorageModal, setShowStorageModal] = useState(false)
+  const [pendingFile, setPendingFile] = useState<File | null>(null)
+  const [pendingFilePreview, setPendingFilePreview] = useState<string>('')
 
   // Image purpose modal state
   const [showPurposeModal, setShowPurposeModal] = useState(false)
@@ -372,24 +378,55 @@ export function ChatInput({
 
       const validation = validateImage(file)
       if (validation.valid) {
-        const url = createThumbnailUrl(file)
-        const newAttachment: ChatAttachment = {
-          id: `att_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-          type: 'image',
-          url,
-          name: file.name,
-          file,
-        }
-        // Open purpose modal for this attachment
-        setPendingAttachment(newAttachment)
-        setShowPurposeModal(true)
+        // Create preview URL for the storage modal
+        const previewUrl = createThumbnailUrl(file)
+        setPendingFile(file)
+        setPendingFilePreview(previewUrl)
+        // Show storage modal first (Hub vs Temporary)
+        setShowStorageModal(true)
         setShowImagePicker(false)
-        break // Only handle one at a time for purpose selection
+        break // Only handle one at a time
       }
     }
 
     e.target.value = ''
   }
+
+  // Handle storage selection from storage modal
+  const handleStorageComplete = useCallback((url: string, savedToHub: boolean) => {
+    if (!pendingFile) return
+
+    // Create attachment with the HTTP URL (no file property needed)
+    const newAttachment: ChatAttachment = {
+      id: `att_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      type: savedToHub ? 'reference' : 'image',
+      url, // HTTP URL from Supabase storage
+      name: pendingFile.name,
+      // No file property - already uploaded
+    }
+
+    // Clean up
+    if (pendingFilePreview) {
+      revokeThumbnailUrl(pendingFilePreview)
+    }
+    setPendingFile(null)
+    setPendingFilePreview('')
+    setShowStorageModal(false)
+
+    // Now show purpose modal
+    setPendingAttachment(newAttachment)
+    setShowPurposeModal(true)
+  }, [pendingFile, pendingFilePreview])
+
+  // Handle storage modal close/cancel
+  const handleStorageClose = useCallback(() => {
+    if (pendingFilePreview) {
+      revokeThumbnailUrl(pendingFilePreview)
+    }
+    setPendingFile(null)
+    setPendingFilePreview('')
+    setShowStorageModal(false)
+  }, [pendingFilePreview])
 
   // Analyze image with Gemini (for manual analyze flow)
   const analyzeImage = useCallback(async (attachment: ChatAttachment) => {
@@ -454,6 +491,7 @@ export function ChatInput({
     try {
       const body: Record<string, any> = {
         purpose: purpose, // Use actual purpose for context-aware analysis
+        conversationId: contextId, // Enable caching in image_analyses table
       }
 
       // If we have a file, convert to base64
@@ -513,10 +551,40 @@ export function ChatInput({
           : a
       ))
     }
+  }, [contextId])
+
+  // Check for cached analysis by URL + purpose (avoids re-analyzing same image)
+  const checkCachedAnalysis = useCallback(async (imageUrl: string, purpose: ImagePurpose): Promise<string | null> => {
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (typeof window !== 'undefined') {
+        const devToken = localStorage.getItem('whop-dev-token')
+        const devUserId = localStorage.getItem('whop-dev-user-id')
+        if (devToken) headers['x-whop-user-token'] = devToken
+        if (devUserId) headers['x-whop-user-id'] = devUserId
+      }
+
+      const response = await fetch('/api/analyze-image/check-cache', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ imageUrl, purpose }),
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        if (data.cached && data.analysis) {
+          console.log('[chat-input] Using cached analysis for:', imageUrl.slice(0, 50))
+          return data.analysis
+        }
+      }
+      return null
+    } catch {
+      return null
+    }
   }, [])
 
   // Handle purpose selection from modal
-  const handlePurposeSelected = useCallback((purpose: ImagePurpose) => {
+  const handlePurposeSelected = useCallback(async (purpose: ImagePurpose) => {
     if (!pendingAttachment) return
 
     if (purpose === 'analyze') {
@@ -525,20 +593,51 @@ export function ChatInput({
       setShowAnalysisModal(true)
       analyzeImage(pendingAttachment)
     } else {
-      // Add attachment immediately with analyzing status
-      const attachmentWithPurpose: ChatAttachment = {
-        ...pendingAttachment,
-        purpose,
-        analysisStatus: 'analyzing', // Show analyzing indicator
-      }
-      setAttachments(prev => [...prev, attachmentWithPurpose])
-      setPendingAttachment(null)
-      setShowPurposeModal(false)
+      // Check if attachment already has analysis (from Skinny Hub generation metadata)
+      if (pendingAttachment.analysis) {
+        console.log('[chat-input] Using existing analysis from Skinny Hub')
+        // Already has analysis - use it directly
+        const attachmentWithPurpose: ChatAttachment = {
+          ...pendingAttachment,
+          purpose,
+          analysisStatus: 'complete',
+        }
+        setAttachments(prev => [...prev, attachmentWithPurpose])
+        setPendingAttachment(null)
+        setShowPurposeModal(false)
+      } else {
+        // Check for cached analysis as fallback
+        const cachedAnalysis = await checkCachedAnalysis(pendingAttachment.url, purpose)
 
-      // Trigger automatic background analysis so AI has context
-      analyzeImageBackground(attachmentWithPurpose, purpose)
+        if (cachedAnalysis) {
+          console.log('[chat-input] Using cached analysis')
+          // Use cached analysis - no API call needed
+          const attachmentWithAnalysis: ChatAttachment = {
+            ...pendingAttachment,
+            purpose,
+            analysis: cachedAnalysis,
+            analysisStatus: 'complete',
+          }
+          setAttachments(prev => [...prev, attachmentWithAnalysis])
+          setPendingAttachment(null)
+          setShowPurposeModal(false)
+        } else {
+          // No analysis available - run it
+          const attachmentWithPurpose: ChatAttachment = {
+            ...pendingAttachment,
+            purpose,
+            analysisStatus: 'analyzing', // Show analyzing indicator
+          }
+          setAttachments(prev => [...prev, attachmentWithPurpose])
+          setPendingAttachment(null)
+          setShowPurposeModal(false)
+
+          // Trigger automatic background analysis so AI has context
+          analyzeImageBackground(attachmentWithPurpose, purpose)
+        }
+      }
     }
-  }, [pendingAttachment, analyzeImage, analyzeImageBackground])
+  }, [pendingAttachment, analyzeImage, analyzeImageBackground, checkCachedAnalysis])
 
   // Handle analysis modal confirm (user selects final purpose after analysis)
   const handleAnalysisConfirm = useCallback((finalPurpose: ImagePurpose) => {
@@ -590,7 +689,13 @@ export function ChatInput({
     })
   }
 
-  const canSend = (value.trim() || attachments.length > 0) && !isLoading && value.length <= MAX_CHARS
+  // Check if any images are still being analyzed
+  const hasAnalyzingImages = attachments.some(a => a.analysisStatus === 'analyzing')
+
+  const canSend = (value.trim() || attachments.length > 0)
+    && !isLoading
+    && value.length <= MAX_CHARS
+    && !hasAnalyzingImages  // Block send while images are being analyzed
 
   return (
     <div className="p-4 pb-safe">
@@ -920,6 +1025,15 @@ export function ChatInput({
           }
         }}
         supportsVision={supportsVision}
+      />
+
+      {/* Image Storage Modal (Hub vs Temporary - shows first for local uploads) */}
+      <ImageStorageModal
+        isOpen={showStorageModal}
+        onClose={handleStorageClose}
+        onComplete={handleStorageComplete}
+        file={pendingFile}
+        previewUrl={pendingFilePreview}
       />
 
       {/* Image Purpose Modal */}

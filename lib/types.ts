@@ -1602,6 +1602,16 @@ export const mockModels: AIModel[] = [
     tags: ['session', 'workflow', 'guided', 'assets'],
     capabilities: { speed: 'fast', quality: 'high' },
   },
+  // === VIDEO MODELS ===
+  {
+    id: 'motion-mode',
+    name: 'Motion Graphics',
+    provider: 'Skinny Studio',
+    description: 'AI-powered motion graphics generator using Remotion. Create animated videos with visual effects.',
+    category: 'video',
+    tags: ['motion', 'animation', 'video', 'remotion'],
+    capabilities: { speed: 'medium', quality: 'high' },
+  },
   // === IMAGE MODELS ===
   {
     id: 'seedream-4.5',
@@ -1682,6 +1692,16 @@ export const mockModels: AIModel[] = [
     tags: ['edit', 'instructions', 'manipulation'],
     capabilities: { speed: 'medium', quality: 'high' },
     replicateId: 'alibaba/qwen-image-edit-plus'
+  },
+  {
+    id: 'qwen-image-2512',
+    name: 'Qwen Image 2512',
+    provider: 'Qwen',
+    description: 'High-quality image generation with image-to-image support up to 2048px',
+    category: 'image',
+    tags: ['high-quality', 'i2i', '2K'],
+    capabilities: { speed: 'medium', quality: 'high' },
+    replicateId: 'qwen/qwen-image-2512'
   },
   // === VIDEO MODELS ===
   {
@@ -2027,7 +2047,7 @@ export const folderTypeConfig: Record<FolderType, { label: string; icon: string;
 
 // -------------------- Sessions (Guided Creative Missions) --------------------
 
-export type SessionType = 'product-drop' | 'album-drop' | 'brand-sprint' | 'content-week'
+export type SessionType = 'product-drop' | 'album-drop' | 'brand-sprint' | 'content-week' | 'custom'
 
 export interface SessionAssetTemplate {
   id: string
@@ -2037,6 +2057,8 @@ export interface SessionAssetTemplate {
   modelSuggestion: string
   skills: string[]
   required: boolean
+  mediaType?: 'image' | 'video'  // Defaults to 'image'
+  duration?: number  // Video duration in seconds (for video assets)
 }
 
 export interface SessionTemplate {
@@ -2059,12 +2081,33 @@ export interface SessionAsset {
   sortOrder: number
 }
 
+export interface SessionMessageAttachment {
+  url: string
+  type: 'image' | 'reference'
+  name?: string
+}
+
+export interface SessionMessage {
+  id: string
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  attachments?: SessionMessageAttachment[]
+  generation?: {
+    status: 'planning' | 'generating' | 'complete' | 'error'
+    url?: string
+    model?: string
+    error?: string
+  }
+  createdAt?: string
+}
+
 export interface Session {
   id: string
   templateId: string
   title: string
   status: 'planning' | 'in_progress' | 'completed'
   assets: SessionAsset[]
+  messages?: SessionMessage[]
   briefContext?: {
     vibe?: string
     platform?: string
@@ -2081,4 +2124,5 @@ export const sessionTypeConfig: Record<SessionType, { label: string; icon: strin
   'album-drop': { label: 'Album Drop', icon: 'Music', color: 'text-purple-400', description: 'Cover art, promo images, visualizers' },
   'brand-sprint': { label: 'Brand Sprint', icon: 'Target', color: 'text-blue-400', description: 'Logo mockups, brand identity, marketing' },
   'content-week': { label: 'Content Week', icon: 'Smartphone', color: 'text-green-400', description: 'Social posts, stories, thumbnails' },
+  'custom': { label: 'Custom', icon: 'Sparkles', color: 'text-skinny-yellow', description: 'Your custom template' },
 }

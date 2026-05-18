@@ -10,6 +10,7 @@ import { ChatHistorySidebar } from '@/components/chat/chat-history-sidebar'
 import { LibraryView } from '@/components/library/library-view'
 import { SettingsView } from '@/components/settings/settings-view'
 import { CreatorGallery } from '@/components/gallery/creator-gallery'
+import { CanvasLandingView } from '@/components/canvas-landing/CanvasLandingView'
 import { ToastContainer } from '@/components/ui/toast'
 import { BottomNavigation } from '@/components/ui/bottom-navigation'
 import { User, Wallet, Settings } from 'lucide-react'
@@ -22,17 +23,21 @@ function useIsSpecialMode() {
   return selectedModel?.id === 'storyboard-mode' || selectedModel?.id === 'session-mode'
 }
 
-// Wrapper to conditionally render chat sidebar (hidden in storyboard/session mode)
-function ChatHistorySidebarWrapper() {
+// Wrapper to conditionally render chat sidebar — hidden in storyboard/session
+// mode (which have their own UI) AND hidden when mode isn't chat (Canvas /
+// Library / Gallery / Settings don't share chat history).
+function ChatHistorySidebarWrapper({ mode }: { mode: Mode }) {
   const isSpecialMode = useIsSpecialMode()
 
-  // Don't render sidebar in storyboard or session mode - they have their own UI
-  if (isSpecialMode) {
+  if (mode !== 'chat' || isSpecialMode) {
     return null
   }
 
   return <ChatHistorySidebar />
 }
+
+// Modes the shell knows how to render.
+const VALID_MODES: readonly Mode[] = ['chat', 'canvas', 'library', 'gallery', 'settings']
 
 // Smooth transition config for view switching
 const viewTransition = {
@@ -40,13 +45,19 @@ const viewTransition = {
   ease: [0.4, 0, 0.2, 1] as const
 }
 
-// Component that handles URL params - needs to be wrapped in Suspense
-function WhopDevTokenHandler() {
+// Component that handles URL params - needs to be wrapped in Suspense.
+// Also reads `?mode=` so deep-links from /canvas (and friends) can preset
+// which shell view is active, then strips the param from the URL so the
+// user doesn't see it.
+function UrlParamHandler({ setMode }: { setMode: (m: Mode) => void }) {
   const searchParams = useSearchParams()
   const router = useRouter()
 
   useEffect(() => {
     const devToken = searchParams.get('whop-dev-user-token')
+    const modeParam = searchParams.get('mode')
+
+    let shouldCleanUrl = false
 
     if (devToken) {
       localStorage.setItem('whop-dev-token', devToken)
@@ -61,10 +72,18 @@ function WhopDevTokenHandler() {
       } catch (e) {
         console.error('Failed to decode dev token:', e)
       }
+      shouldCleanUrl = true
+    }
 
+    if (modeParam && (VALID_MODES as readonly string[]).includes(modeParam)) {
+      setMode(modeParam as Mode)
+      shouldCleanUrl = true
+    }
+
+    if (shouldCleanUrl) {
       router.replace('/')
     }
-  }, [searchParams, router])
+  }, [searchParams, router, setMode])
 
   return null
 }
@@ -97,9 +116,9 @@ export default function Home() {
 
   return (
     <main className="h-[100dvh] bg-black flex flex-col overflow-hidden">
-      {/* Handle Whop dev token from URL */}
+      {/* Handle Whop dev token + ?mode= deep-links from URL */}
       <Suspense fallback={null}>
-        <WhopDevTokenHandler />
+        <UrlParamHandler setMode={setMode} />
       </Suspense>
 
       {/* Header */}
@@ -129,8 +148,10 @@ export default function Home() {
             </a>
           </motion.div>
 
-          {/* Mode Switcher - desktop only, mobile uses bottom nav */}
-          <div className="hidden md:block">
+          {/* Mode Switcher - desktop only, mobile uses bottom nav. Canvas
+              is now a first-class tab inside the switcher, so the legacy
+              admin-only "Canvas beta" pill + mobile FAB have been removed. */}
+          <div className="hidden md:flex items-center gap-2">
             <ModeSwitcher mode={mode} setMode={setMode} />
           </div>
 
@@ -188,8 +209,21 @@ export default function Home() {
               transition={viewTransition}
               className="flex-1 flex overflow-hidden will-change-[opacity]"
             >
-              <ChatHistorySidebarWrapper />
+              <ChatHistorySidebarWrapper mode={mode} />
               <ChatView />
+            </motion.div>
+          )}
+
+          {mode === 'canvas' && (
+            <motion.div
+              key="canvas"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={viewTransition}
+              className="flex-1 flex flex-col overflow-hidden will-change-[opacity]"
+            >
+              <CanvasLandingView />
             </motion.div>
           )}
 

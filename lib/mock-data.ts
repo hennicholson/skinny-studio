@@ -61,6 +61,14 @@ export const mockModels: AIModel[] = [
     tags: ['storyboard', 'planning', 'shots']
   },
   {
+    id: 'motion-mode',
+    name: 'Motion Graphics',
+    provider: 'Skinny Studio',
+    description: 'AI-powered motion graphics generator using Remotion. Create animated videos with visual effects.',
+    category: 'video',
+    tags: ['motion', 'animation', 'video']
+  },
+  {
     id: 'flux-pro',
     name: 'FLUX Pro',
     provider: 'Black Forest Labs',
@@ -115,6 +123,14 @@ export const mockModels: AIModel[] = [
     description: 'Professional design-focused generation',
     category: 'image',
     tags: ['design', 'vectors', 'professional']
+  },
+  {
+    id: 'qwen-image-2512',
+    name: 'Qwen Image 2512',
+    provider: 'Qwen',
+    description: 'High-quality image generation with image-to-image support up to 2048px',
+    category: 'image',
+    tags: ['high-quality', 'i2i', '2K']
   },
   {
     id: 'minimax-video',

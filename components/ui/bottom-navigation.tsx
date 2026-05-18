@@ -2,7 +2,7 @@
 
 import { motion } from 'framer-motion'
 import { cn } from '@/lib/utils'
-import { MessageSquare, Images, Users, Settings } from 'lucide-react'
+import { MessageSquare, Layers, Images, Users, Settings } from 'lucide-react'
 import { Mode } from './mode-switcher'
 import { hapticLight } from '@/lib/haptics'
 
@@ -11,8 +11,11 @@ interface BottomNavigationProps {
   setMode: (mode: Mode) => void
 }
 
+// Canvas sits between Chat and Library so it falls under the user's thumb on
+// most mobile devices. Five tabs fit comfortably inside the 100dvw bar.
 const tabs = [
   { id: 'chat' as const, icon: MessageSquare, label: 'Chat' },
+  { id: 'canvas' as const, icon: Layers, label: 'Canvas' },
   { id: 'library' as const, icon: Images, label: 'Library' },
   { id: 'gallery' as const, icon: Users, label: 'Gallery' },
   { id: 'settings' as const, icon: Settings, label: 'Settings' },

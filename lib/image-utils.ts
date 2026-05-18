@@ -115,6 +115,61 @@ export function generateUploadId(): string {
 }
 
 /**
+ * Upload a local image file to Supabase storage
+ * @param file - The file to upload
+ * @param permanent - If true, saves to 'hub' folder (Skinny Hub), otherwise 'temp'
+ * @returns The public HTTP URL of the uploaded image
+ */
+export async function uploadLocalImage(
+  file: File,
+  permanent: boolean = false
+): Promise<string> {
+  // Get Whop user ID from localStorage (for dev) or it will be handled server-side
+  let whopUserId = 'anonymous'
+  if (typeof window !== 'undefined') {
+    const devUserId = localStorage.getItem('whop-dev-user-id')
+    if (devUserId) whopUserId = devUserId
+  }
+
+  // Convert file to base64
+  const base64DataUrl = await fileToBase64(file)
+  const base64Data = base64DataUrl.split(',')[1]
+
+  // Determine file extension
+  const ext = file.type.includes('png') ? 'png' : file.type.includes('jpeg') || file.type.includes('jpg') ? 'jpg' : 'webp'
+  const filename = `${generateUploadId()}.${ext}`
+  const folder = permanent ? 'hub' : 'temp'
+
+  // Upload via API route (handles auth and Supabase service role)
+  const response = await fetch('/api/upload-image', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(typeof window !== 'undefined' && localStorage.getItem('whop-dev-token')
+        ? { 'x-whop-user-token': localStorage.getItem('whop-dev-token')! }
+        : {}),
+      ...(typeof window !== 'undefined' && localStorage.getItem('whop-dev-user-id')
+        ? { 'x-whop-user-id': localStorage.getItem('whop-dev-user-id')! }
+        : {}),
+    },
+    body: JSON.stringify({
+      base64: base64Data,
+      mimeType: file.type,
+      filename,
+      folder,
+    }),
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'Upload failed' }))
+    throw new Error(error.error || 'Failed to upload image')
+  }
+
+  const data = await response.json()
+  return data.url
+}
+
+/**
  * Get image dimensions from a File
  */
 export function getImageDimensions(file: File): Promise<{ width: number; height: number }> {

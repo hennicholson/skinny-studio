@@ -16,6 +16,13 @@ interface Generation {
   studio_models?: {
     name: string
   }
+  output_metadata?: {
+    analysis?: {
+      text: string
+      purpose: string
+      analyzed_at: string
+    }
+  } | null
 }
 
 interface HubFolder {
@@ -47,13 +54,13 @@ export function ImageSourcePicker({
   const [searchQuery, setSearchQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
 
-  // Fetch user's generations and folders when hub view is opened
+  // Refetch generations when picker opens to get fresh data with any saved analyses
   useEffect(() => {
-    if (view === 'hub' && generations.length === 0) {
+    if (isOpen && view === 'hub') {
       fetchGenerations()
       fetchFolders()
     }
-  }, [view])
+  }, [isOpen, view])
 
   // Reset view when picker is closed
   useEffect(() => {
@@ -119,11 +126,19 @@ export function ImageSourcePicker({
   }
 
   const handleSelectFromHub = (generation: Generation, imageUrl: string) => {
+    // Get analysis from generation metadata if it exists
+    const existingAnalysis = generation.output_metadata?.analysis?.text
+
     const attachment: ChatAttachment = {
       id: `hub_${generation.id}_${Date.now()}`,
       type: 'reference',
       url: imageUrl,
       name: generation.prompt?.slice(0, 30) || 'Hub Image',
+      // Include existing analysis if available (skip re-analyzing)
+      ...(existingAnalysis && {
+        analysis: existingAnalysis,
+        analysisStatus: 'complete' as const,
+      }),
     }
     onSelectImage(attachment)
     onClose()

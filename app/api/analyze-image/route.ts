@@ -97,21 +97,88 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Image URL or base64 data required' }, { status: 400 })
     }
 
-    // Check cache if conversationId provided
-    if (conversationId && imageUrl) {
-      const { data: cached } = await sbAdmin
+    // Check cache - first by conversationId (exact match), then by imageUrl + purpose (cross-conversation)
+    if (imageUrl) {
+      // Try exact conversation match first
+      if (conversationId) {
+        const { data: cached } = await sbAdmin
+          .from('image_analyses')
+          .select('analysis_text')
+          .eq('conversation_id', conversationId)
+          .eq('image_url', imageUrl)
+          .maybeSingle()
+
+        if (cached?.analysis_text) {
+          console.log('[analyze-image] Cache hit (conversation) for image:', imageUrl.slice(0, 50))
+          return NextResponse.json({
+            success: true,
+            analysis: cached.analysis_text,
+            cached: true,
+          })
+        }
+      }
+
+      // Fallback: Check for any cached analysis with same URL and purpose (reuse across conversations)
+      // This helps with Skinny Hub images that users reuse in different conversations
+      const { data: crossConvCached } = await sbAdmin
         .from('image_analyses')
         .select('analysis_text')
-        .eq('conversation_id', conversationId)
         .eq('image_url', imageUrl)
+        .eq('purpose', purpose || 'analyze')
+        .order('created_at', { ascending: false })
+        .limit(1)
         .maybeSingle()
 
-      if (cached?.analysis_text) {
-        console.log('[analyze-image] Cache hit for image:', imageUrl.slice(0, 50))
+      if (crossConvCached?.analysis_text) {
+        console.log('[analyze-image] Cache hit (cross-conversation) for image:', imageUrl.slice(0, 50))
         return NextResponse.json({
           success: true,
-          analysis: cached.analysis_text,
+          analysis: crossConvCached.analysis_text,
           cached: true,
+        })
+      }
+
+      // Last cache layer before burning Gemini credits: check whether the
+      // URL belongs to a Skinny Hub generation that already has a stored
+      // analysis on its `output_metadata.analysis.text`. We persist this
+      // on first analysis (see bottom of route) so subsequent reuses —
+      // across canvases, conversations, or after image_analyses TTL — read
+      // from the asset's own metadata for free.
+      const { data: hubGen } = await sbAdmin
+        .from('generations')
+        .select('id, output_metadata')
+        .contains('output_urls', [imageUrl])
+        .maybeSingle()
+      const hubAnalysis = (hubGen?.output_metadata as Record<string, any> | undefined)
+        ?.analysis?.text as string | undefined
+      if (hubAnalysis) {
+        console.log('[analyze-image] Cache hit (hub metadata) for image:', imageUrl.slice(0, 50))
+        // Backfill the image_analyses table so the next lookup short-circuits
+        // even earlier (and we don't repeat this scan for the same URL).
+        if (conversationId) {
+          await sbAdmin
+            .from('image_analyses')
+            .upsert(
+              {
+                whop_user_id: whop.id,
+                conversation_id: conversationId,
+                image_url: imageUrl,
+                purpose: purpose || 'analyze',
+                analysis_text: hubAnalysis,
+                model_used: 'gemini-2.5-flash',
+                token_count: null,
+              },
+              { onConflict: 'conversation_id,image_url' },
+            )
+            .then(({ error }) => {
+              if (error) console.error('[analyze-image] backfill insert error:', error)
+            })
+        }
+        return NextResponse.json({
+          success: true,
+          analysis: hubAnalysis,
+          cached: true,
+          source: 'hub_metadata',
         })
       }
     }
@@ -200,6 +267,39 @@ export async function POST(request: NextRequest) {
       })
     } catch {
       // Gemini usage tracking is optional
+    }
+
+    // Save analysis to the generation record so it persists with the image
+    // This allows Skinny Hub images to have their analysis attached when fetched
+    if (imageUrl) {
+      try {
+        const { data: generation } = await sbAdmin
+          .from('generations')
+          .select('id, output_metadata')
+          .contains('output_urls', [imageUrl])
+          .maybeSingle()
+
+        if (generation) {
+          const existingMetadata = (generation.output_metadata as Record<string, any>) || {}
+          await sbAdmin
+            .from('generations')
+            .update({
+              output_metadata: {
+                ...existingMetadata,
+                analysis: {
+                  text: analysisText,
+                  purpose: purpose || 'analyze',
+                  analyzed_at: new Date().toISOString(),
+                }
+              }
+            })
+            .eq('id', generation.id)
+          console.log('[analyze-image] Saved analysis to generation:', generation.id)
+        }
+      } catch (saveError) {
+        console.error('[analyze-image] Failed to save analysis to generation:', saveError)
+        // Continue - this shouldn't block the response
+      }
     }
 
     return NextResponse.json({

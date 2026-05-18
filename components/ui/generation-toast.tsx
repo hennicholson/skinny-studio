@@ -108,10 +108,12 @@ export function GenerationToast({
                 {getTitle()}
               </h4>
               <button
+                type="button"
                 onClick={() => onDismiss(notification.id)}
-                className="p-1 rounded text-white/30 hover:text-white hover:bg-white/[0.05] transition-colors"
+                aria-label="Dismiss notification"
+                className="inline-flex items-center justify-center w-8 h-8 -m-1 rounded text-white/30 hover:text-white hover:bg-white/[0.05] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-skinny-yellow/60"
               >
-                <X size={14} />
+                <X size={14} aria-hidden />
               </button>
             </div>
 
@@ -197,8 +199,17 @@ export function GenerationToastContainer({
   onDismiss,
   onView,
 }: GenerationToastContainerProps) {
+  // Polite live region — generation completions shouldn't interrupt
+  // what the user is doing, but should be announced.
+  const hasFailure = notifications.some((n) => n.status === 'failed')
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+    <div
+      role="region"
+      aria-label="Generation status"
+      aria-live={hasFailure ? 'assertive' : 'polite'}
+      aria-atomic="false"
+      className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"
+    >
       <AnimatePresence mode="popLayout">
         {notifications.slice(0, 5).map((notification) => (
           <div key={notification.id} className="pointer-events-auto">

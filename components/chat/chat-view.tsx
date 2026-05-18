@@ -4,6 +4,8 @@ import { useEffect, useRef, useCallback, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Image from 'next/image'
 import { cn } from '@/lib/utils'
+import { SkinnyLogo } from '@/components/ui/SkinnyLogo'
+import { useRouter } from 'next/navigation'
 import { Key, ExternalLink, AlertCircle, X, Camera, Palette, Share2, Play } from 'lucide-react'
 import { useChat, SkillForApi, SkillCreationData, ChatAttachment } from '@/lib/context/chat-context'
 import { useSkills } from '@/lib/context/skills-context'
@@ -111,16 +113,11 @@ function WelcomeScreen({ onSuggestionClick }: { onSuggestionClick: (prompt: stri
     <div className="flex-1 flex flex-col items-center justify-center px-6 relative animate-fadeIn">
       {/* Content Container - Centered */}
       <div className="flex flex-col items-center justify-center text-center max-w-lg mx-auto relative z-10 pt-8">
-        {/* Logo with CSS floating animation - GPU accelerated */}
-        <div className="mb-6 animate-float">
-          <Image
-            src="/skinny-logo.svg"
-            alt="Skinny Studio"
-            width={280}
-            height={280}
-            className="drop-shadow-[0_0_60px_rgba(214,252,81,0.5)]"
-            priority
-          />
+        {/* Logo — Lottie wordmark (replays every 10s) wrapped in the same
+            float animation so it bobs gently between plays. Static SVG
+            fallback kicks in automatically if Lottie fails to load. */}
+        <div className="mb-6 animate-float w-[420px] max-w-[80vw] drop-shadow-[0_0_60px_rgba(214,252,81,0.5)]">
+          <SkinnyLogo mode="hero" />
         </div>
 
         {/* Title */}
@@ -175,10 +172,14 @@ export function ChatView() {
   const { showInsufficientBalance, selectedModel, setSelectedModel, models } = useApp()
   const { currentSession, loadSession, clearCurrentSession } = useSessions()
 
+  const router = useRouter()
+
   // Check if storyboard mode is selected
   const isStoryboardMode = selectedModel?.id === 'storyboard-mode'
   // Check if session mode is selected
   const isSessionMode = selectedModel?.id === 'session-mode'
+  // Check if motion mode is selected
+  const isMotionMode = selectedModel?.id === 'motion-mode'
 
   // Session picker modal state
   const [showSessionPicker, setShowSessionPicker] = useState(false)
@@ -191,6 +192,15 @@ export function ChatView() {
   const [creativeBrief, setCreativeBrief] = useState<SkinnyBriefData | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
+
+  // Handle motion mode - redirect to /motion page
+  useEffect(() => {
+    if (isMotionMode) {
+      router.push('/motion')
+      // Reset to default model so coming back doesn't redirect again
+      setSelectedModel(defaultModel)
+    }
+  }, [isMotionMode, router, setSelectedModel, defaultModel])
 
   // Handle session mode - show picker if no current session, otherwise show session view
   useEffect(() => {

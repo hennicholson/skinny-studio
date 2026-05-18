@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { User, CreditCard, Zap, Palette, Bell, Shield, ChevronRight, Key, Check, Eye, EyeOff, ExternalLink, Cpu, Mic, Wallet, Plus, X, Loader2, ArrowLeft, Sparkles, Receipt, Activity, Settings2, Server } from 'lucide-react'
+import { User, CreditCard, Zap, Palette, Bell, Shield, ChevronRight, Key, Check, Eye, EyeOff, ExternalLink, Cpu, Mic, Wallet, Plus, X, Loader2, ArrowLeft, Sparkles, Receipt, Activity, Settings2, Server, Clock } from 'lucide-react'
+import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { SkillsManager } from '@/components/skills/skills-manager'
 import { SpendingLog } from '@/components/settings/spending-log'
@@ -40,12 +41,37 @@ interface SettingsSectionProps {
   rightElement?: React.ReactNode
 }
 
-function SettingsSection({ icon, title, description, onClick, rightElement }: SettingsSectionProps) {
+function SettingsSection({
+  icon,
+  title,
+  description,
+  onClick,
+  rightElement,
+  disabled,
+}: SettingsSectionProps & { disabled?: boolean }) {
+  // 44px+ touch target enforced via min-h. Disabled sections render as
+  // div so AT can read them as informational rather than actionable.
+  if (disabled) {
+    return (
+      <div
+        aria-disabled="true"
+        className="w-full flex items-center gap-4 p-4 min-h-[64px] rounded-xl bg-white/[0.02] border border-white/[0.04] text-left opacity-60 cursor-not-allowed"
+      >
+        <div className="p-2 rounded-lg bg-white/[0.04] text-zinc-500">{icon}</div>
+        <div className="flex-1 min-w-0">
+          <h3 className="font-medium text-zinc-300">{title}</h3>
+          <p className="text-xs text-zinc-500 truncate">{description}</p>
+        </div>
+        {rightElement}
+      </div>
+    )
+  }
   return (
     <motion.button
       onClick={onClick}
-      whileHover={{ scale: 1.01 }}
-      className="w-full flex items-center gap-4 p-4 rounded-xl bg-zinc-900/50 border border-zinc-800 hover:border-zinc-700 text-left transition-colors"
+      whileHover={{ scale: 1.005 }}
+      whileTap={{ scale: 0.995 }}
+      className="w-full flex items-center gap-4 p-4 min-h-[64px] rounded-xl bg-zinc-900/50 border border-zinc-800 hover:border-zinc-700 hover:bg-zinc-900/70 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-skinny-yellow/60"
     >
       <div className="p-2 rounded-lg bg-zinc-800 text-skinny-yellow">
         {icon}
@@ -54,7 +80,7 @@ function SettingsSection({ icon, title, description, onClick, rightElement }: Se
         <h3 className="font-medium text-white">{title}</h3>
         <p className="text-xs text-zinc-500 truncate">{description}</p>
       </div>
-      {rightElement || <ChevronRight size={18} className="text-zinc-600" />}
+      {rightElement || <ChevronRight size={18} className="text-zinc-600" aria-hidden />}
     </motion.button>
   )
 }
@@ -263,21 +289,23 @@ export function SettingsView({ initialPanel = 'main' }: SettingsViewProps) {
         if (status === 'ok') {
           // Refresh user data after successful purchase
           setTimeout(() => refreshUser(), 1000)
-          alert('Purchase successful! Your credits have been added.')
+          toast.success('Credits added to your balance.')
         } else if (status === 'error') {
           console.error('Purchase error:', (result as any)?.error)
-          alert(`Purchase failed: ${(result as any)?.error || 'Unknown error'}`)
+          toast.error(`Purchase failed: ${(result as any)?.error || 'Unknown error'}`)
         } else {
           console.log('Purchase status:', status)
         }
       } catch (sdkError: any) {
         // If not in Whop iframe, the SDK will throw an error
         console.error('Iframe SDK error:', sdkError)
-        alert('Top-ups are only available when the app is accessed through the Whop platform. Please open Skinny Studio from your Whop dashboard.')
+        toast.error(
+          'Top-ups are only available inside Whop. Open Skinny Studio from your Whop dashboard.'
+        )
       }
     } catch (err: any) {
       console.error('Purchase error:', err)
-      alert(`Purchase failed: ${err?.message || 'Unknown error'}`)
+      toast.error(`Purchase failed: ${err?.message || 'Unknown error'}`)
     } finally {
       setPurchaseLoading(null)
     }
@@ -415,11 +443,17 @@ export function SettingsView({ initialPanel = 'main' }: SettingsViewProps) {
             className="p-6 rounded-xl bg-gradient-to-br from-zinc-900 to-zinc-800 border border-zinc-700 mb-8"
           >
             <div className="flex items-center gap-3 mb-2">
-              <Wallet size={24} className="text-skinny-yellow" />
-              <span className="text-sm text-zinc-400">Current Balance</span>
+              <Wallet size={24} className="text-skinny-yellow" aria-hidden />
+              <span className="text-sm text-zinc-400">Current balance</span>
+              {profile?.lifetime_access && (
+                <span className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-skinny-yellow/20 text-skinny-yellow text-[10px] font-bold uppercase tracking-wider">
+                  <Sparkles size={10} aria-hidden />
+                  Lifetime
+                </span>
+              )}
             </div>
-            <p className="text-4xl font-bold text-white">${balanceDollars}</p>
-            <p className="text-xs text-zinc-500 mt-1">{balanceCents} credits</p>
+            <p className="text-4xl font-bold text-white tabular-nums">${balanceDollars}</p>
+            <p className="text-xs text-zinc-500 mt-1 tabular-nums">{balanceCents} credits</p>
           </motion.div>
 
           {/* Top-Up Plans */}
@@ -431,31 +465,57 @@ export function SettingsView({ initialPanel = 'main' }: SettingsViewProps) {
             <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-4">Top Up Credits</h3>
 
             {loadingPlans ? (
-              <div className="flex items-center justify-center py-12">
-                <Loader2 size={24} className="animate-spin text-zinc-500" />
+              <div
+                className="grid grid-cols-2 gap-3"
+                role="status"
+                aria-label="Loading top-up plans"
+              >
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <div
+                    key={i}
+                    className="h-[92px] rounded-xl bg-white/[0.03] border border-white/[0.04] animate-pulse"
+                  />
+                ))}
               </div>
             ) : topupPlans.length === 0 ? (
-              <p className="text-sm text-zinc-500 text-center py-8">No top-up plans available</p>
+              <div className="rounded-xl bg-white/[0.03] border border-white/[0.06] px-4 py-8 text-center">
+                <Wallet size={24} className="text-zinc-600 mx-auto mb-2" aria-hidden />
+                <p className="text-sm text-zinc-400">No top-up plans available right now.</p>
+                <button
+                  type="button"
+                  onClick={fetchTopupPlans}
+                  className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.06] text-xs text-zinc-300 hover:bg-white/[0.08] transition-colors min-h-[36px]"
+                >
+                  <Loader2 size={12} aria-hidden />
+                  Retry
+                </button>
+              </div>
             ) : (
               <div className="grid grid-cols-2 gap-3">
                 {topupPlans.map((plan) => (
                   <button
                     key={plan.plan_id}
+                    type="button"
                     onClick={() => handlePurchase(plan)}
                     disabled={purchaseLoading !== null}
+                    aria-label={`Top up $${parseFloat(plan.price).toFixed(0)} — ${plan.description || plan.name}`}
                     className={cn(
-                      "p-4 rounded-xl border text-left transition-all hover:scale-[1.02]",
-                      "bg-zinc-900/50 border-zinc-800 hover:border-skinny-yellow/50",
-                      purchaseLoading === plan.plan_id && "opacity-50"
+                      'p-4 rounded-xl border text-left transition-all min-h-[92px]',
+                      'bg-zinc-900/50 border-zinc-800 hover:border-skinny-yellow/50 hover:bg-zinc-900/70',
+                      'focus:outline-none focus-visible:ring-2 focus-visible:ring-skinny-yellow/60',
+                      purchaseLoading !== null && purchaseLoading !== plan.plan_id && 'opacity-40 pointer-events-none',
+                      purchaseLoading === plan.plan_id && 'opacity-80'
                     )}
                   >
                     <div className="flex justify-between items-start mb-2">
-                      <span className="text-2xl font-bold text-white">${parseFloat(plan.price).toFixed(0)}</span>
+                      <span className="text-2xl font-bold text-white tabular-nums">
+                        ${parseFloat(plan.price).toFixed(0)}
+                      </span>
                       {purchaseLoading === plan.plan_id && (
-                        <Loader2 size={16} className="animate-spin text-skinny-yellow" />
+                        <Loader2 size={16} className="animate-spin text-skinny-yellow" aria-hidden />
                       )}
                     </div>
-                    <p className="text-xs text-zinc-500">{plan.description}</p>
+                    <p className="text-xs text-zinc-500 line-clamp-2">{plan.description}</p>
                   </button>
                 ))}
               </div>
@@ -923,11 +983,25 @@ export function SettingsView({ initialPanel = 'main' }: SettingsViewProps) {
               icon={<Bell size={18} />}
               title="Notifications"
               description="Manage notification preferences"
+              disabled
+              rightElement={
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/[0.04] text-[10px] font-medium text-zinc-400 uppercase tracking-wider">
+                  <Clock size={10} aria-hidden />
+                  Soon
+                </span>
+              }
             />
             <SettingsSection
               icon={<Shield size={18} />}
               title="Privacy"
               description="Control your data and privacy settings"
+              disabled
+              rightElement={
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/[0.04] text-[10px] font-medium text-zinc-400 uppercase tracking-wider">
+                  <Clock size={10} aria-hidden />
+                  Soon
+                </span>
+              }
             />
           </div>
         </motion.div>

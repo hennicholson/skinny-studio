@@ -4,6 +4,48 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Canvas component utilities */
+@layer components {
+  /* Canvas form input. Mobile uses 16px to prevent iOS Safari's
+     zoom-on-focus; desktop tightens to 14px for the denser modal layout.
+     Used by NodeSettingsModal + MobileNodeSheet only. */
+  .ss-input {
+    @apply w-full px-3 py-2 bg-white/[0.03] ring-1 ring-white/[0.06] rounded-md text-base sm:text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-skinny-yellow/40 transition-colors;
+  }
+}
+
+@keyframes pulse-soft {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(214, 252, 81, 0.0); }
+  50% { box-shadow: 0 0 0 4px rgba(214, 252, 81, 0.06); }
+}
+.animate-pulse-soft { animation: pulse-soft 1.6s ease-in-out infinite; }
+
+/* React-Flow handle overrides — we render pill handles so disable default circle */
+.react-flow__handle.react-flow__handle-skinny-pill { background: transparent !important; border: none !important; }
+.react-flow__edge-path { transition: stroke-opacity 0.15s ease; }
+.react-flow__edge.selected .react-flow__edge-path { stroke-opacity: 1; stroke-width: 2; }
+.react-flow__node:focus { outline: none; }
+.react-flow__attribution { display: none !important; }
+
+/* Canvas cursor feel — Figma/Runway-style.
+   Pane: grab → grabbing. Nodes: default (move handled by react-flow itself
+   when actually dragging). Handle pills: crosshair so users know they can
+   pull a connection. The :active pseudo on .react-flow__pane covers the
+   pan-in-progress state. */
+.react-flow__pane { cursor: grab; }
+.react-flow__pane:active,
+.react-flow__pane.dragging,
+.react-flow.dragging .react-flow__pane { cursor: grabbing !important; }
+.react-flow__node { cursor: default; }
+.react-flow__node.dragging,
+.react-flow__node.selected.dragging { cursor: grabbing !important; }
+.react-flow__handle { cursor: crosshair !important; }
+.react-flow__handle:hover { transform: translate(-50%, -50%) scale(1.4); }
+/* Selection box (marquee) — match skinny accent */
+.react-flow__selection { background: rgba(214, 252, 81, 0.08) !important; border: 1px dashed rgba(214, 252, 81, 0.6) !important; }
+/* Suppress text selection while panning so cursor stays crisp */
+.react-flow.dragging, .react-flow.dragging * { user-select: none !important; -webkit-user-select: none !important; }
+
 :root {
   --skinny-yellow: #D6FC51;
   --skinny-green: #B8FF00;
@@ -415,4 +457,115 @@ html {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* ============================================
+   LIQUID GLASS — Apple-style frosted pill
+   Multi-layered: blurred backdrop + saturation
+   boost + top inset highlight + bottom inset
+   shadow + soft outer drop shadow. Pair with
+   any wrap/element class to apply.
+
+   These rules live inside @layer components so
+   Tailwind utilities (e.g. `absolute`, `flex`,
+   `hidden`) can still override layout properties
+   at the call site. Without the layer, this
+   custom CSS comes AFTER @tailwind utilities in
+   the cascade and silently breaks positioning.
+   ============================================ */
+@layer components {
+.glass-button-wrap,
+.liquid-glass-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.glass-button,
+.liquid-glass {
+  position: relative;
+  isolation: isolate;
+  /* Solid-ish dark base so the button is visible even when sitting over an
+     area with nothing behind to refract (empty React Flow canvas etc.).
+     The white diagonal gradient layers on top of the base; the backdrop-
+     filter adds the "liquid" warp whenever there IS content behind. */
+  background:
+    linear-gradient(135deg,
+      rgba(255, 255, 255, 0.16) 0%,
+      rgba(255, 255, 255, 0.03) 50%,
+      rgba(255, 255, 255, 0.08) 100%),
+    rgba(24, 24, 27, 0.78);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  backdrop-filter: blur(22px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.30),
+    inset 0 -1px 0 0 rgba(0, 0, 0, 0.30),
+    inset 0 0 24px 0 rgba(255, 255, 255, 0.04);
+  color: inherit;
+  cursor: pointer;
+  transition: transform 0.18s ease, background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.glass-button:hover,
+.liquid-glass:hover {
+  background:
+    linear-gradient(135deg,
+      rgba(255, 255, 255, 0.22) 0%,
+      rgba(255, 255, 255, 0.06) 50%,
+      rgba(255, 255, 255, 0.12) 100%),
+    rgba(28, 28, 32, 0.82);
+  border-color: rgba(214, 252, 81, 0.28);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.38),
+    inset 0 -1px 0 0 rgba(0, 0, 0, 0.32),
+    inset 0 0 32px 0 rgba(214, 252, 81, 0.10);
+}
+
+.glass-button:active,
+.liquid-glass:active {
+  transform: scale(0.98);
+}
+
+.glass-button-text,
+.liquid-glass-text {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  user-select: none;
+}
+
+.glass-button-shadow,
+.liquid-glass-shadow {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.35),
+    0 2px 8px rgba(0, 0, 0, 0.25),
+    0 0 32px rgba(214, 252, 81, 0.04);
+  pointer-events: none;
+}
+
+/* Edge-attached vertical variant — flush to viewport right edge with a
+   curved left side, no right border. Used by the canvas Director toggle. */
+.liquid-glass-edge-right {
+  border-top-left-radius: 18px;
+  border-bottom-left-radius: 18px;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: none;
+  box-shadow:
+    inset 1px 0 0 0 rgba(255, 255, 255, 0.28),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.22),
+    inset 0 -1px 0 0 rgba(0, 0, 0, 0.25),
+    inset 0 0 24px 0 rgba(255, 255, 255, 0.04);
+}
+
+.liquid-glass-edge-right:hover {
+  box-shadow:
+    inset 1px 0 0 0 rgba(214, 252, 81, 0.36),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.32),
+    inset 0 -1px 0 0 rgba(0, 0, 0, 0.28),
+    inset 0 0 32px 0 rgba(214, 252, 81, 0.10);
+}
 }

@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useContext, useReducer, useCallback, ReactNode, useEffect } from 'react'
+import { createContext, useContext, useReducer, useCallback, ReactNode, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import type {
   Session,
@@ -139,7 +139,7 @@ function sessionsReducer(state: SessionsState, action: SessionsAction): Sessions
 }
 
 // ============================================
-// STORAGE HELPERS
+// STORAGE HELPERS (localStorage as fallback)
 // ============================================
 
 const STORAGE_KEY = 'skinny-studio-sessions'
@@ -171,6 +171,92 @@ function saveToStorage(sessions: Session[]): void {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions))
   } catch (error) {
     console.error('Error saving sessions to storage:', error)
+  }
+}
+
+// ============================================
+// API HELPERS (Supabase persistence)
+// ============================================
+
+function getAuthHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (typeof window !== 'undefined') {
+    const devToken = localStorage.getItem('whop-dev-token')
+    const devUserId = localStorage.getItem('whop-dev-user-id')
+    if (devToken) headers['x-whop-user-token'] = devToken
+    if (devUserId) headers['x-whop-user-id'] = devUserId
+  }
+  return headers
+}
+
+async function fetchSessionsFromAPI(): Promise<Session[]> {
+  try {
+    const response = await fetch('/api/sessions', { headers: getAuthHeaders() })
+    if (!response.ok) {
+      throw new Error('Failed to fetch sessions')
+    }
+    const data = await response.json()
+    return (data.sessions || []).map((s: any) => ({
+      ...s,
+      templateId: s.template_id,
+      briefContext: s.brief_context,
+      createdAt: new Date(s.created_at),
+      updatedAt: new Date(s.updated_at),
+    }))
+  } catch (error) {
+    console.error('Error fetching sessions from API:', error)
+    return []
+  }
+}
+
+async function saveSessionToAPI(session: Session): Promise<boolean> {
+  try {
+    const response = await fetch('/api/sessions', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({
+        templateId: session.templateId,
+        title: session.title,
+        briefContext: session.briefContext,
+        assets: session.assets,
+      }),
+    })
+    return response.ok
+  } catch (error) {
+    console.error('Error saving session to API:', error)
+    return false
+  }
+}
+
+async function updateSessionInAPI(id: string, updates: Partial<Session>): Promise<boolean> {
+  try {
+    const response = await fetch(`/api/sessions/${id}`, {
+      method: 'PATCH',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({
+        title: updates.title,
+        status: updates.status,
+        briefContext: updates.briefContext,
+        assets: updates.assets,
+      }),
+    })
+    return response.ok
+  } catch (error) {
+    console.error('Error updating session in API:', error)
+    return false
+  }
+}
+
+async function deleteSessionFromAPI(id: string): Promise<boolean> {
+  try {
+    const response = await fetch(`/api/sessions/${id}`, {
+      method: 'DELETE',
+      headers: getAuthHeaders(),
+    })
+    return response.ok
+  } catch (error) {
+    console.error('Error deleting session from API:', error)
+    return false
   }
 }
 
@@ -211,9 +297,16 @@ interface SessionsContextValue {
   isGenerating: string | null
   error: string | null
 
-  // Templates (from static file)
+  // Templates (built-in from static file)
   templates: SessionTemplate[]
   getTemplate: (id: string) => SessionTemplate | undefined
+
+  // Custom templates (user-created)
+  customTemplates: SessionTemplate[]
+  addCustomTemplate: (template: SessionTemplate) => void
+  updateCustomTemplate: (id: string, updates: Partial<SessionTemplate>) => void
+  deleteCustomTemplate: (id: string) => void
+  getAllTemplates: () => SessionTemplate[]
 
   // Session actions
   loadSessions: () => void
@@ -243,16 +336,65 @@ const SessionsContext = createContext<SessionsContextValue | null>(null)
 // PROVIDER
 // ============================================
 
+// Custom templates localStorage key
+const CUSTOM_TEMPLATES_KEY = 'skinny-studio-custom-templates'
+
+function loadCustomTemplates(): SessionTemplate[] {
+  if (typeof window === 'undefined') return []
+  try {
+    const stored = localStorage.getItem(CUSTOM_TEMPLATES_KEY)
+    return stored ? JSON.parse(stored) : []
+  } catch {
+    return []
+  }
+}
+
+function saveCustomTemplates(templates: SessionTemplate[]): void {
+  if (typeof window === 'undefined') return
+  try {
+    localStorage.setItem(CUSTOM_TEMPLATES_KEY, JSON.stringify(templates))
+  } catch (error) {
+    console.error('Failed to save custom templates:', error)
+  }
+}
+
 export function SessionsProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(sessionsReducer, initialState)
+  const [customTemplates, setCustomTemplates] = useState<SessionTemplate[]>([])
 
-  // Load sessions from storage on mount
+  // Load custom templates from localStorage on mount
   useEffect(() => {
-    const sessions = loadFromStorage()
-    dispatch({ type: 'SET_SESSIONS', payload: sessions })
+    setCustomTemplates(loadCustomTemplates())
   }, [])
 
-  // Save sessions to storage on change
+  // Save custom templates to localStorage on change
+  useEffect(() => {
+    if (customTemplates.length > 0) {
+      saveCustomTemplates(customTemplates)
+    }
+  }, [customTemplates])
+
+  // Load sessions from API on mount (with localStorage fallback)
+  useEffect(() => {
+    const loadInitialSessions = async () => {
+      dispatch({ type: 'SET_LOADING', payload: true })
+
+      // Try API first
+      const apiSessions = await fetchSessionsFromAPI()
+      if (apiSessions.length > 0) {
+        dispatch({ type: 'SET_SESSIONS', payload: apiSessions })
+        // Also sync to localStorage as backup
+        saveToStorage(apiSessions)
+      } else {
+        // Fall back to localStorage
+        const localSessions = loadFromStorage()
+        dispatch({ type: 'SET_SESSIONS', payload: localSessions })
+      }
+    }
+    loadInitialSessions()
+  }, [])
+
+  // Save sessions to localStorage on change (as backup)
   useEffect(() => {
     if (state.sessions.length > 0) {
       saveToStorage(state.sessions)
@@ -263,10 +405,18 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
   // SESSION ACTIONS
   // ==========================================
 
-  const loadSessions = useCallback(() => {
+  const loadSessions = useCallback(async () => {
     dispatch({ type: 'SET_LOADING', payload: true })
-    const sessions = loadFromStorage()
-    dispatch({ type: 'SET_SESSIONS', payload: sessions })
+
+    // Try API first
+    const apiSessions = await fetchSessionsFromAPI()
+    if (apiSessions.length > 0) {
+      dispatch({ type: 'SET_SESSIONS', payload: apiSessions })
+      saveToStorage(apiSessions)
+    } else {
+      const localSessions = loadFromStorage()
+      dispatch({ type: 'SET_SESSIONS', payload: localSessions })
+    }
   }, [])
 
   const createSession = useCallback((input: CreateSessionInput): Session => {
@@ -292,6 +442,14 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     }
 
     dispatch({ type: 'ADD_SESSION', payload: session })
+
+    // Also save to API (async, non-blocking)
+    saveSessionToAPI(session).then(success => {
+      if (!success) {
+        console.warn('Failed to save session to API, using localStorage only')
+      }
+    })
+
     toast.success(`${template.name} session created!`)
     return session
   }, [])
@@ -304,10 +462,24 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
 
   const updateSession = useCallback((id: string, updates: Partial<Session>) => {
     dispatch({ type: 'UPDATE_SESSION', payload: { id, updates } })
+
+    // Also update in API (async, non-blocking)
+    updateSessionInAPI(id, updates).then(success => {
+      if (!success) {
+        console.warn('Failed to update session in API')
+      }
+    })
   }, [])
 
   const deleteSession = useCallback((id: string) => {
     dispatch({ type: 'DELETE_SESSION', payload: id })
+
+    // Also delete from API (async, non-blocking)
+    deleteSessionFromAPI(id).then(success => {
+      if (!success) {
+        console.warn('Failed to delete session from API')
+      }
+    })
     toast.success('Session deleted')
   }, [])
 
@@ -437,7 +609,9 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     return session.assets.find(a => a.status === 'pending') || null
   }, [state.sessions, state.currentSession])
 
-  const getAssetTemplate = useCallback((asset: SessionAsset): SessionAssetTemplate | undefined => {
+  const getAssetTemplate = useCallback((asset: SessionAsset | null | undefined): SessionAssetTemplate | undefined => {
+    if (!asset) return undefined
+
     const session = state.currentSession
     if (!session) return undefined
 
@@ -448,8 +622,55 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
   }, [state.currentSession])
 
   const getTemplate = useCallback((id: string): SessionTemplate | undefined => {
+    // Check custom templates first
+    const custom = customTemplates.find(t => t.id === id)
+    if (custom) return custom
+    // Then check built-in templates
     return getSessionTemplate(id)
+  }, [customTemplates])
+
+  // ==========================================
+  // CUSTOM TEMPLATE MANAGEMENT
+  // ==========================================
+
+  const addCustomTemplate = useCallback((template: SessionTemplate) => {
+    setCustomTemplates(prev => {
+      // Ensure template has unique ID
+      const newTemplate = {
+        ...template,
+        id: template.id || `custom-${Date.now()}`,
+        type: 'custom' as const,
+      }
+      const updated = [...prev, newTemplate]
+      saveCustomTemplates(updated)
+      toast.success(`Template "${template.name}" created!`)
+      return updated
+    })
   }, [])
+
+  const updateCustomTemplate = useCallback((id: string, updates: Partial<SessionTemplate>) => {
+    setCustomTemplates(prev => {
+      const updated = prev.map(t => t.id === id ? { ...t, ...updates } : t)
+      saveCustomTemplates(updated)
+      toast.success('Template updated!')
+      return updated
+    })
+  }, [])
+
+  const deleteCustomTemplate = useCallback((id: string) => {
+    setCustomTemplates(prev => {
+      const template = prev.find(t => t.id === id)
+      const updated = prev.filter(t => t.id !== id)
+      saveCustomTemplates(updated)
+      if (template) toast.success(`Template "${template.name}" deleted`)
+      return updated
+    })
+  }, [])
+
+  const getAllTemplates = useCallback((): SessionTemplate[] => {
+    // Return built-in templates first, then custom templates
+    return [...sessionTemplates, ...customTemplates]
+  }, [customTemplates])
 
   // ==========================================
   // CONTEXT VALUE
@@ -467,6 +688,13 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     // Templates
     templates: sessionTemplates,
     getTemplate,
+
+    // Custom templates
+    customTemplates,
+    addCustomTemplate,
+    updateCustomTemplate,
+    deleteCustomTemplate,
+    getAllTemplates,
 
     // Session actions
     loadSessions,
