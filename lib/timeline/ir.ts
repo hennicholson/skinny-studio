@@ -46,6 +46,12 @@ export interface TimelineClip {
   /** In/out trim in seconds, expressed in the SOURCE clip's timebase. */
   sourceStart: number
   sourceEnd: number
+  /** Native length of the underlying media file in seconds. Used to clamp
+   *  the right-edge trim handle + numerical sourceEnd input so users can't
+   *  extend a clip past the end of its actual video. Optional for backward
+   *  compat with stored clips that predate this field — in that case the
+   *  trim handles fall back to unbounded (the OLD behavior). */
+  sourceDuration?: number
   /** Position on the timeline (seconds). The clip occupies
    *  [timelineStart, timelineStart + (sourceEnd - sourceStart)). */
   timelineStart: number

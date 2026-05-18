@@ -152,12 +152,23 @@ export const TimelineClipBlock = memo(function TimelineClipBlock({
         return
       }
       if (drag.mode === 'right') {
-        const newSourceEnd = Math.max(drag.startSourceStart + 0.05, drag.startSourceEnd + dt)
+        // Hard cap at the source's native duration so users can't extend the
+        // out-point past the actual end of the video file. Falls back to
+        // Infinity (old unbounded behavior) for legacy clips that predate
+        // the sourceDuration field.
+        const maxOut = clip.sourceDuration && clip.sourceDuration > 0
+          ? clip.sourceDuration
+          : Number.POSITIVE_INFINITY
+        const newSourceEnd = Math.max(
+          drag.startSourceStart + 0.05,
+          Math.min(maxOut, drag.startSourceEnd + dt),
+        )
         // Snap trailing edge.
         const trailingEdge = drag.startTimelineStart + (newSourceEnd - drag.startSourceStart)
         const snapped = snapDelta(0, [trailingEdge])
+        const snappedEnd = Math.min(maxOut, newSourceEnd + snapped)
         onChange(clip.id, {
-          sourceEnd: newSourceEnd + snapped,
+          sourceEnd: snappedEnd,
         })
         return
       }

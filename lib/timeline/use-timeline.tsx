@@ -527,9 +527,13 @@ export function TimelineProvider({
         const tl = latestTimelineRef.current
         const clip = tl?.clips.find((c) => c.id === selectedClipId)
         if (clip) {
+          const cap = clip.sourceDuration ?? Number.POSITIVE_INFINITY
           const newEnd = Math.max(
             clip.sourceStart + 0.05,
-            clip.sourceStart + (playheadRef.current - clip.timelineStart),
+            Math.min(
+              cap,
+              clip.sourceStart + (playheadRef.current - clip.timelineStart),
+            ),
           )
           updateClip(selectedClipId, { sourceEnd: newEnd })
         }

@@ -152,6 +152,8 @@ export function TimelineAudioUploader({
           sourceUrl: upload.url,
           sourceStart: 0,
           sourceEnd: upload.durationSeconds,
+          // Persist source length so trim handles can't extend past EOF.
+          sourceDuration: upload.durationSeconds,
           timelineStart: nextClipStartOnTrack(timeline, audioTrack.id),
           volume: 1,
           muted: false,

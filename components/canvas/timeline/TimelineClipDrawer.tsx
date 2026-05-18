@@ -109,6 +109,9 @@ function DrawerBody({
           label="In-point (source)"
           value={clip.sourceStart}
           min={0}
+          // The source length is the natural max for the in-point — but the
+          // canonical cap is sourceEnd - 0.05 because in must stay before out.
+          max={clip.sourceDuration ? clip.sourceDuration - 0.05 : undefined}
           step={1 / 30}
           onChange={(v) => {
             const next = Math.max(0, Math.min(clip.sourceEnd - 0.05, v))
@@ -120,10 +123,24 @@ function DrawerBody({
           label="Out-point (source)"
           value={clip.sourceEnd}
           min={clip.sourceStart + 0.05}
+          // Hard cap at the source's native duration so users can't extend
+          // the out-point past the actual end of the media file. Falls back
+          // to undefined (unbounded) on legacy clips with no sourceDuration.
+          max={clip.sourceDuration}
           step={1 / 30}
-          onChange={(v) => onChange({ sourceEnd: Math.max(clip.sourceStart + 0.05, v) })}
+          onChange={(v) => {
+            const cap = clip.sourceDuration ?? Number.POSITIVE_INFINITY
+            onChange({
+              sourceEnd: Math.max(clip.sourceStart + 0.05, Math.min(cap, v)),
+            })
+          }}
           formatter={formatTimecode}
         />
+        {clip.sourceDuration ? (
+          <p className="-mt-1 px-0.5 text-[10px] text-white/40">
+            Source length: {formatTimecode(clip.sourceDuration, false)} — trim cannot extend past this.
+          </p>
+        ) : null}
 
         {/* Volume + mute */}
         <div className="flex flex-col gap-2 rounded-lg border border-white/[0.06] bg-white/[0.02] p-3">
@@ -175,6 +192,7 @@ function NumberField({
   label,
   value,
   min,
+  max,
   step,
   formatter,
   onChange,
@@ -182,6 +200,7 @@ function NumberField({
   label: string
   value: number
   min?: number
+  max?: number
   step?: number
   formatter?(v: number): string
   onChange(v: number): void
@@ -198,6 +217,7 @@ function NumberField({
         <input
           type="number"
           min={min}
+          max={max}
           step={step}
           value={Number(value.toFixed(3))}
           onChange={(e) => {

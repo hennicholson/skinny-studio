@@ -209,6 +209,11 @@ function TimelineEditorInner({ canvasVideoNodes = [], onAddRenderToCanvas, onSwi
   // the given track at the given timeline-time.
   const onAssetDrop = useCallback(
     (payload: TimelineDragPayload, atTime: number, trackId: string) => {
+      // If the payload didn't supply a real duration we fall back to 5s as a
+      // sane initial trim — but DON'T set sourceDuration in that case, so the
+      // trim handles stay unbounded until we learn the true length.
+      const knownDuration = payload.duration > 0 ? payload.duration : null
+      const duration = knownDuration ?? 5
       addClip({
         trackId,
         source:
@@ -217,7 +222,11 @@ function TimelineEditorInner({ canvasVideoNodes = [], onAddRenderToCanvas, onSwi
             : { kind: 'upload', uploadId: payload.uploadId },
         sourceUrl: payload.url,
         sourceStart: 0,
-        sourceEnd: payload.duration > 0 ? payload.duration : 5,
+        sourceEnd: duration,
+        // Persist the source's native length so the right-edge trim handle
+        // can clamp to it. Omit when unknown — caller's "guess of 5s" must
+        // not become a false ceiling on a video that's actually longer.
+        sourceDuration: knownDuration ?? undefined,
         timelineStart: Math.max(0, atTime),
       })
     },
