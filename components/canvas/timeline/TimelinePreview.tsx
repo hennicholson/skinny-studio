@@ -63,37 +63,36 @@ export function TimelinePreview({
     return out
   }, [audioTracks, timeline.clips, playhead])
 
-  const aspectRatio = `${timeline.width} / ${timeline.height}`
-
   return (
     <div
       className={cn(
-        'relative flex h-full w-full items-center justify-center bg-black/40',
+        // `min-h-0` is critical — without it the flex item can't shrink and
+        // the preview overflows its parent. The video element inside uses
+        // `object-contain` + max-h/max-w so it letterboxes to the timeline's
+        // intended aspect ratio without needing a wrapper that pre-computes
+        // dimensions. (The previous impl wrapped in a div with aspectRatio
+        // but no explicit size — CSS gave it 0×0, audio played invisibly.)
+        'relative flex h-full w-full min-h-0 items-center justify-center bg-black/40',
         className,
       )}
+      data-timeline-w={timeline.width}
+      data-timeline-h={timeline.height}
     >
-      <div
-        className="relative max-h-full max-w-full overflow-hidden rounded-md bg-black shadow-2xl"
-        style={{ aspectRatio }}
-      >
-        {timeline.clips.length === 0 ? (
-          <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-white/40">
-            Drop a clip on the timeline to start
-          </div>
-        ) : activeVideo ? (
-          <VideoSurface clip={activeVideo} playhead={playhead} playing={playing} />
-        ) : (
-          // Gap on the video track — show "no source" instead of an empty box
-          // so users understand why the preview is dark.
-          <div className="flex h-full w-full items-center justify-center text-xs text-white/30">
-            No video at this point
-          </div>
-        )}
-        {/* Audio mixers — separate hidden elements per active audio clip. */}
-        {activeAudio.map((clip) => (
-          <AudioSurface key={clip.id} clip={clip} playhead={playhead} playing={playing} />
-        ))}
-      </div>
+      {timeline.clips.length === 0 ? (
+        <div className="px-4 text-center text-sm text-white/40">
+          Drop a clip on the timeline to start
+        </div>
+      ) : activeVideo ? (
+        <VideoSurface clip={activeVideo} playhead={playhead} playing={playing} />
+      ) : (
+        // Gap on the video track — show "no source" instead of an empty box
+        // so users understand why the preview is dark.
+        <div className="text-xs text-white/30">No video at this point</div>
+      )}
+      {/* Audio mixers — separate hidden elements per active audio clip. */}
+      {activeAudio.map((clip) => (
+        <AudioSurface key={clip.id} clip={clip} playhead={playhead} playing={playing} />
+      ))}
     </div>
   )
 }
@@ -179,12 +178,13 @@ function VideoSurface({
     <video
       ref={ref}
       src={clip.sourceUrl}
-      // crossOrigin lets the canvas read frames if we ever want to grab a
-      // thumbnail; Supabase Storage sends permissive CORS so this is fine.
-      crossOrigin="anonymous"
       playsInline
       preload="auto"
-      className="absolute inset-0 h-full w-full object-contain"
+      // max-h/max-w + object-contain letterboxes the video to fit the
+      // available preview area while preserving its native aspect ratio.
+      // (Previously the video used absolute inset-0 inside a 0×0 wrapper,
+      // which is why audio played but you saw nothing.)
+      className="max-h-full max-w-full rounded-md bg-black object-contain shadow-2xl"
     />
   )
 }
