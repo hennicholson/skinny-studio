@@ -65,12 +65,16 @@ export interface TimelineEditorProps {
   onAddRenderToCanvas?(publicUrl: string): void
   /** Fired when the user clicks the Canvas pill in the mode selector. */
   onSwitchToCanvas?: () => void
+  /** Returns Whop auth headers (token + content-type) for every backend call.
+   *  REQUIRED — without it, all /api/canvas/[id]/timeline/* routes 401 and
+   *  the editor silently falls back to local-only state. */
+  getWhopHeaders: () => Record<string, string>
 }
 
 export function TimelineEditor(props: TimelineEditorProps) {
   return (
     <MotionConfig reducedMotion="user">
-      <TimelineProvider canvasId={props.canvasId}>
+      <TimelineProvider canvasId={props.canvasId} getWhopHeaders={props.getWhopHeaders}>
         <TimelineEditorInner {...props} />
       </TimelineProvider>
     </MotionConfig>
@@ -81,7 +85,7 @@ export function TimelineEditor(props: TimelineEditorProps) {
 // Inner editor (has access to the hook)
 // ---------------------------------------------------------------------------
 
-function TimelineEditorInner({ canvasVideoNodes = [], onAddRenderToCanvas, onSwitchToCanvas }: TimelineEditorProps) {
+function TimelineEditorInner({ canvasVideoNodes = [], onAddRenderToCanvas, onSwitchToCanvas, getWhopHeaders }: TimelineEditorProps) {
   const {
     timeline,
     loading,
@@ -375,6 +379,7 @@ function TimelineEditorInner({ canvasVideoNodes = [], onAddRenderToCanvas, onSwi
               timeline={timeline}
               onUploadAdded={addUpload}
               onClipAdded={addClip}
+              getWhopHeaders={getWhopHeaders}
               ref={audioPickRef}
             />
           </span>
@@ -383,6 +388,7 @@ function TimelineEditorInner({ canvasVideoNodes = [], onAddRenderToCanvas, onSwi
             timeline={timeline}
             canvasId={canvasId}
             onAddToCanvas={onAddRenderToCanvas}
+            getWhopHeaders={getWhopHeaders}
           />
         </div>
       </header>

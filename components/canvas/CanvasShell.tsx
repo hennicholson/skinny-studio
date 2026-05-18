@@ -1813,6 +1813,7 @@ function CanvasInner({
             >
               <TimelineEditor
                 canvasId={initial.id}
+                getWhopHeaders={getWhopHeaders}
                 onSwitchToCanvas={() => setMode('canvas')}
                 canvasVideoNodes={
                   canvas.nodes

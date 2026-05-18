@@ -37,6 +37,9 @@ export interface TimelineExportButtonProps {
   /** Optional handler to add the rendered video back into the canvas as an
    *  Output node — wired in CanvasShell. */
   onAddToCanvas?(publicUrl: string): void
+  /** Whop auth headers for the /timeline/render endpoint. Without these the
+   *  upload returns 401 and the toast surfaces a generic error. */
+  getWhopHeaders?: () => Record<string, string>
 }
 
 type ExportState =
@@ -50,6 +53,7 @@ export function TimelineExportButton({
   timeline,
   canvasId,
   onAddToCanvas,
+  getWhopHeaders,
 }: TimelineExportButtonProps) {
   const [state, setState] = useState<ExportState>({ kind: 'idle' })
   const abortRef = useRef<AbortController | null>(null)
@@ -67,7 +71,13 @@ export function TimelineExportButton({
         signal: ac.signal,
         onProgress: (p) => setState({ kind: 'rendering', progress: p }),
       })
-      const { publicUrl } = await uploadRender(canvasId, timeline.id, blob)
+      const { publicUrl } = await uploadRender(
+        canvasId,
+        timeline.id,
+        blob,
+        ac.signal,
+        getWhopHeaders?.() ?? {},
+      )
       setState({ kind: 'success', publicUrl })
       toast.success('Render complete')
     } catch (err: any) {
@@ -79,7 +89,7 @@ export function TimelineExportButton({
       setState({ kind: 'error', message: err?.message || 'Render failed' })
       toast.error('Render failed')
     }
-  }, [canvasId, timeline])
+  }, [canvasId, timeline, getWhopHeaders])
 
   const onClick = useCallback(() => {
     const env = checkRenderEnvironment(timeline)

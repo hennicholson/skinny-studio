@@ -659,15 +659,23 @@ export async function uploadRender(
   canvasId: string,
   timelineId: string,
   blob: Blob,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /** Whop auth headers (token + content-type). Without these the /render
+   *  endpoint returns 401 and the upload silently 'fails up' to a generic
+   *  error toast. The caller (TimelineExportButton) gets them from the
+   *  CanvasShell-provided getWhopHeaders(). */
+  authHeaders: Record<string, string> = {},
 ): Promise<{ publicUrl: string }> {
   const contentType = blob.type || 'video/mp4'
   const baseUrl = `/api/canvas/${encodeURIComponent(canvasId)}/timeline/render`
+  // Merge: auth headers + JSON content-type. Some auth headers may include
+  // their own content-type, which we override since the request body is JSON.
+  const jsonHeaders = { ...authHeaders, 'Content-Type': 'application/json' }
 
   // Phase 1: ask the server to sign an upload URL.
   const signRes = await fetch(baseUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: jsonHeaders,
     body: JSON.stringify({ action: 'sign', contentType }),
     signal,
   })
@@ -704,7 +712,7 @@ export async function uploadRender(
   // Phase 3: tell the server the bytes landed; get back the public URL.
   const finalRes = await fetch(baseUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: jsonHeaders,
     body: JSON.stringify({
       action: 'finalize',
       storagePath: signJson.storagePath,

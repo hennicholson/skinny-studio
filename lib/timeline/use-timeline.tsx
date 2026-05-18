@@ -93,9 +93,15 @@ const HISTORY_LIMIT = 50
 
 export function TimelineProvider({
   canvasId,
+  getWhopHeaders,
   children,
 }: {
   canvasId: string
+  /** Returns the Whop auth headers (token + content-type) for every fetch.
+   *  Threaded down from CanvasShell. Without this, all timeline API calls
+   *  return 401 and the editor silently falls back to local-only state —
+   *  user adds clips, "saves," refresh, nothing's there. */
+  getWhopHeaders: () => Record<string, string>
   children: React.ReactNode
 }) {
   const [timeline, setTimeline] = useState<Timeline | null>(null)
@@ -139,7 +145,7 @@ export function TimelineProvider({
     let cancelled = false
     setLoading(true)
     setError(null)
-    fetch(`/api/canvas/${canvasId}/timeline`)
+    fetch(`/api/canvas/${canvasId}/timeline`, { headers: getWhopHeaders() })
       .then(async (res) => {
         if (cancelled) return
         if (res.status === 404) {
@@ -168,7 +174,7 @@ export function TimelineProvider({
     return () => {
       cancelled = true
     }
-  }, [canvasId])
+  }, [canvasId, getWhopHeaders])
 
   // -----------------------------------------------------------------------
   // Save (debounced) + force save
@@ -187,7 +193,7 @@ export function TimelineProvider({
     try {
       const res = await fetch(`/api/canvas/${canvasId}/timeline`, {
         method: 'PUT',
-        headers: { 'content-type': 'application/json' },
+        headers: getWhopHeaders(),
         body: JSON.stringify(current),
       })
       if (!res.ok) throw new Error(`Save failed (${res.status})`)
@@ -199,7 +205,7 @@ export function TimelineProvider({
     } finally {
       setSaving(false)
     }
-  }, [canvasId])
+  }, [canvasId, getWhopHeaders])
 
   const forceSave = useCallback(async () => {
     if (saveTimer.current) {

@@ -22,6 +22,8 @@ export interface TimelineAudioUploaderProps {
   timeline: Timeline
   onUploadAdded(upload: TimelineUpload): void
   onClipAdded(clip: Omit<TimelineClip, 'id'>): void
+  /** Whop auth headers — required so /upload + /upload/finalize don't 401. */
+  getWhopHeaders: () => Record<string, string>
   /** Optional: receives the imperative "pick file" trigger so other parts
    *  of the editor (e.g. the library panel's + button) can open the picker
    *  without owning a hidden <input>. */
@@ -33,6 +35,7 @@ export function TimelineAudioUploader({
   timeline,
   onUploadAdded,
   onClipAdded,
+  getWhopHeaders,
   ref,
 }: TimelineAudioUploaderProps) {
   const fileRef = useRef<HTMLInputElement>(null)
@@ -64,68 +67,77 @@ export function TimelineAudioUploader({
       }
       setBusy(true)
       try {
-        // 1) probe duration locally
+        // 1) probe duration locally first (need it before finalize).
         const objectUrl = URL.createObjectURL(file)
         const duration = await probeAudioDuration(objectUrl)
 
-        // 2) request signed upload (backend agent owns this route)
-        let uploadUrl: string | undefined
-        let publicUrl = objectUrl // fallback if server unavailable
-        try {
-          const initRes = await fetch(`/api/canvas/${canvasId}/timeline/upload`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              filename: file.name,
-              contentType: file.type,
-              kind: 'audio',
-            }),
-          })
-          if (initRes.ok) {
-            const json = (await initRes.json()) as { uploadUrl?: string; publicUrl?: string }
-            uploadUrl = json.uploadUrl
-            if (json.publicUrl) publicUrl = json.publicUrl
-          }
-        } catch {
-          /* backend not ready yet — degrade to local object URL */
+        // 2) ask the server to mint a signed upload URL.
+        //    Contract: POST /upload {filename, contentType} →
+        //    {uploadId, timelineId, bucket, storagePath, signedUrl, token, contentType}
+        const initRes = await fetch(`/api/canvas/${canvasId}/timeline/upload`, {
+          method: 'POST',
+          headers: getWhopHeaders(),
+          body: JSON.stringify({
+            filename: file.name,
+            contentType: file.type,
+          }),
+        })
+        if (!initRes.ok) {
+          const text = await initRes.text().catch(() => '')
+          throw new Error(`Upload init failed (${initRes.status}). ${text || ''}`)
+        }
+        const initJson = (await initRes.json()) as {
+          uploadId?: string
+          timelineId?: string
+          bucket?: string
+          storagePath?: string
+          signedUrl?: string
+        }
+        if (!initJson.signedUrl || !initJson.storagePath) {
+          throw new Error('Server returned an invalid upload URL.')
         }
 
-        // 3) put bytes (if we got a signed URL)
-        if (uploadUrl) {
-          try {
-            await fetch(uploadUrl, {
-              method: 'PUT',
-              headers: { 'content-type': file.type },
-              body: file,
-            })
-          } catch (err) {
-            console.warn('[timeline] direct upload failed', err)
-          }
+        // 3) PUT the file bytes to Supabase Storage at the signed URL.
+        const putRes = await fetch(initJson.signedUrl, {
+          method: 'PUT',
+          headers: { 'content-type': file.type },
+          body: file,
+        })
+        if (!putRes.ok) {
+          throw new Error(`Storage upload failed (${putRes.status}).`)
         }
 
-        // 4) finalize
-        let upload: TimelineUpload = {
-          id: newUploadId(),
+        // 4) finalize — server verifies the bytes landed, inserts the
+        //    canvas_timeline_uploads row, returns a signed playback URL.
+        //    Contract: POST /upload/finalize
+        //    {storagePath, filename, contentType, durationSeconds, sizeBytes}
+        //    → {upload: TimelineUpload}
+        const finRes = await fetch(`/api/canvas/${canvasId}/timeline/upload/finalize`, {
+          method: 'POST',
+          headers: getWhopHeaders(),
+          body: JSON.stringify({
+            storagePath: initJson.storagePath,
+            filename: file.name,
+            contentType: file.type,
+            durationSeconds: duration,
+            sizeBytes: file.size,
+          }),
+        })
+        if (!finRes.ok) {
+          const text = await finRes.text().catch(() => '')
+          throw new Error(`Finalize failed (${finRes.status}). ${text || ''}`)
+        }
+        const finJson = (await finRes.json()) as { upload?: TimelineUpload }
+        if (!finJson.upload) {
+          throw new Error('Server confirmed upload but returned no metadata.')
+        }
+        const upload: TimelineUpload = {
+          ...finJson.upload,
+          // Backend's TimelineUpload lacks `kind`; tag it audio for the UI.
           kind: 'audio',
-          url: publicUrl,
-          filename: file.name,
-          durationSeconds: duration,
-          createdAt: new Date().toISOString(),
-          sizeBytes: file.size,
         }
-        try {
-          const finRes = await fetch(`/api/canvas/${canvasId}/timeline/upload/finalize`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(upload),
-          })
-          if (finRes.ok) {
-            const json = (await finRes.json()) as { upload?: TimelineUpload }
-            if (json.upload) upload = json.upload
-          }
-        } catch {
-          /* keep local upload record */
-        }
+        // We can now release the local probe URL.
+        URL.revokeObjectURL(objectUrl)
 
         onUploadAdded(upload)
 
