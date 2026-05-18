@@ -503,6 +503,14 @@ function CanvasInner({
   }, [canvas, initial.id, getWhopHeaders, demoMode, refetchAndReplace])
 
   // Autosave 1.5s after edits stop.
+  //
+  // `running` is in the deps so that when an async run completes
+  // (Seedance / Wan / Kling — noWait+poll path stays "running" for the
+  // whole poll loop), the effect re-fires once `running` flips back to
+  // false and we persist whatever outputUrls the executor wrote to the
+  // node. Without this dep, video-gen outputs were silently dropped on
+  // refresh because rfNodes was last touched mid-run while saves were
+  // gated, and no edit happened after setRunning(false) to re-trigger.
   useEffect(() => {
     if (running) return
     if (isFirstAutosave.current) {
@@ -514,7 +522,7 @@ function CanvasInner({
     }, 1500)
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [title, rfNodes, rfEdges])
+  }, [title, rfNodes, rfEdges, running])
 
   // ===== Run (full canvas OR a single-node + ancestors subgraph) =====
   // Both paths share `executeSubgraph`. The TopBar Run button calls
