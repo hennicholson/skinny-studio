@@ -1,24 +1,30 @@
 'use client'
 
-// Video preview area. v0 implementation: at playhead time t, find the active
-// clip on each VIDEO track and render its <video> element seeked to
-// `sourceStart + (t - timelineStart)`. Inactive clips' video elements are
-// hidden but kept mounted so seeks remain cheap. Multiple stacked video
-// tracks are drawn in z-order; top track wins.
+// Single-element video preview. At every playhead position we resolve which
+// clip is active on the topmost video track, then point ONE <video> element
+// at that clip's sourceUrl with currentTime = sourceStart + (playhead - timelineStart).
+//
+// Why one element instead of N stacked ones:
+//   - preload="metadata" on a stack of videos means the browser fetches just
+//     metadata for each — when the active one tries to .currentTime = t the
+//     frame buffer isn't populated yet and nothing renders.
+//   - Audio clips are mixed via separate <audio> elements per active audio
+//     clip (cheap, no display, just play/pause + seek).
+//   - First-frame display is forced via load() + waiting on `loadeddata`
+//     before seeking — guarantees the frame paints.
 
-import { memo, useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
-import { clipAtTime, type Timeline } from '@/lib/timeline/ir'
+import { clipAtTime, type Timeline, type TimelineClip } from '@/lib/timeline/ir'
 
 export interface TimelinePreviewProps {
   timeline: Timeline
   playhead: number
   playing: boolean
-  /** Optional aspect ratio override; defaults to width/height from timeline. */
   className?: string
 }
 
-export const TimelinePreview = memo(function TimelinePreview({
+export function TimelinePreview({
   timeline,
   playhead,
   playing,
@@ -36,27 +42,25 @@ export const TimelinePreview = memo(function TimelinePreview({
     [timeline.tracks],
   )
 
-  // All clips mounted permanently, seeked + shown based on playhead.
-  const allClips = timeline.clips
-
-  // Find the topmost active video clip for display.
-  const activeVideoClipId = useMemo(() => {
+  // Topmost active video clip at the current playhead.
+  const activeVideo = useMemo<TimelineClip | null>(() => {
     for (let i = videoTracks.length - 1; i >= 0; i--) {
       const track = videoTracks[i]
       const found = clipAtTime(timeline.clips, track.id, playhead)
-      if (found) return found.id
+      if (found) return found
     }
     return null
   }, [videoTracks, timeline.clips, playhead])
 
-  // Active audio clip ids per track for mixing.
-  const activeAudioClipIds = useMemo(() => {
-    const ids = new Set<string>()
+  // All active audio clips (one per track at most).
+  const activeAudio = useMemo<TimelineClip[]>(() => {
+    const out: TimelineClip[] = []
     for (const track of audioTracks) {
+      if (track.muted) continue
       const found = clipAtTime(timeline.clips, track.id, playhead)
-      if (found) ids.add(found.id)
+      if (found && !found.muted) out.push(found)
     }
-    return ids
+    return out
   }, [audioTracks, timeline.clips, playhead])
 
   const aspectRatio = `${timeline.width} / ${timeline.height}`
@@ -64,8 +68,7 @@ export const TimelinePreview = memo(function TimelinePreview({
   return (
     <div
       className={cn(
-        'relative flex h-full w-full items-center justify-center',
-        'bg-black/40',
+        'relative flex h-full w-full items-center justify-center bg-black/40',
         className,
       )}
     >
@@ -73,131 +76,181 @@ export const TimelinePreview = memo(function TimelinePreview({
         className="relative max-h-full max-w-full overflow-hidden rounded-md bg-black shadow-2xl"
         style={{ aspectRatio }}
       >
-        {allClips.length === 0 ? (
+        {timeline.clips.length === 0 ? (
           <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-white/40">
             Drop a clip on the timeline to start
           </div>
+        ) : activeVideo ? (
+          <VideoSurface clip={activeVideo} playhead={playhead} playing={playing} />
         ) : (
-          allClips.map((clip) => {
-            const track = timeline.tracks.find((t) => t.id === clip.trackId)
-            if (!track) return null
-            const isVideo = track.kind === 'video'
-            const isActiveVideo = isVideo && clip.id === activeVideoClipId
-            const isActiveAudio = !isVideo && activeAudioClipIds.has(clip.id)
-            return (
-              <ClipVideoElement
-                key={clip.id}
-                clipId={clip.id}
-                src={clip.sourceUrl}
-                sourceStart={clip.sourceStart}
-                timelineStart={clip.timelineStart}
-                volume={clip.volume ?? (isVideo ? 1 : 1)}
-                muted={clip.muted ?? false}
-                isAudio={!isVideo}
-                visible={isActiveVideo}
-                active={isActiveVideo || isActiveAudio}
-                playing={playing}
-                playhead={playhead}
-              />
-            )
-          })
+          // Gap on the video track — show "no source" instead of an empty box
+          // so users understand why the preview is dark.
+          <div className="flex h-full w-full items-center justify-center text-xs text-white/30">
+            No video at this point
+          </div>
         )}
+        {/* Audio mixers — separate hidden elements per active audio clip. */}
+        {activeAudio.map((clip) => (
+          <AudioSurface key={clip.id} clip={clip} playhead={playhead} playing={playing} />
+        ))}
       </div>
     </div>
   )
-})
+}
 
-// ---------------------------------------------------------------------------
-// A single <video> element bound to a clip. Seeks to keep aligned with the
-// playhead; plays/pauses with the transport. Hidden when not active.
-// ---------------------------------------------------------------------------
-function ClipVideoElement({
-  clipId,
-  src,
-  sourceStart,
-  timelineStart,
-  volume,
-  muted,
-  isAudio,
-  visible,
-  active,
-  playing,
+/* ─────────────────────── Single-element video surface ─────────────────── */
+
+function VideoSurface({
+  clip,
   playhead,
+  playing,
 }: {
-  clipId: string
-  src: string
-  sourceStart: number
-  timelineStart: number
-  volume: number
-  muted: boolean
-  isAudio: boolean
-  visible: boolean
-  active: boolean
-  playing: boolean
+  clip: TimelineClip
   playhead: number
+  playing: boolean
 }) {
   const ref = useRef<HTMLVideoElement>(null)
-  const lastSeekRef = useRef<number>(-1)
-
-  // Compute the source-time at the current playhead.
-  const sourceTime = sourceStart + (playhead - timelineStart)
-
-  // Seek when not playing OR drift > 0.2s (keeps audio + video in sync).
+  // The "intended" source time, recomputed every render.
+  const sourceTime = Math.max(0, clip.sourceStart + (playhead - clip.timelineStart))
+  // Track whether the current <video>'s src + initial seek have settled so
+  // we know it's safe to seek on later playhead moves (Safari throws when
+  // you set currentTime before loadeddata fires).
+  const [ready, setReady] = useState(false)
+  // Per-src lifecycle: when the clip changes, reset readiness + force load.
   useEffect(() => {
     const v = ref.current
     if (!v) return
-    if (!active) {
-      if (!v.paused) v.pause()
-      return
+    setReady(false)
+    v.preload = 'auto'
+    v.playsInline = true
+    v.muted = clip.muted ?? false
+    v.volume = Math.max(0, Math.min(1, clip.volume ?? 1))
+    const onLoaded = () => {
+      try {
+        v.currentTime = sourceTime
+      } catch {
+        /* ignore — some browsers throw on tiny invalid seeks */
+      }
+      setReady(true)
     }
+    v.addEventListener('loadeddata', onLoaded)
+    // Calling load() explicitly nudges Safari to actually fetch a video
+    // segment instead of stopping at metadata — without this, the very
+    // first frame never paints until the user hits play.
+    v.load()
+    return () => {
+      v.removeEventListener('loadeddata', onLoaded)
+    }
+    // Re-run when the SRC changes (different clip selected at playhead).
+    // sourceTime intentionally not in deps — the seek effect below handles it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clip.sourceUrl])
+
+  // Seek when the playhead diverges from where the video actually is.
+  useEffect(() => {
+    const v = ref.current
+    if (!v || !ready) return
     const drift = Math.abs(v.currentTime - sourceTime)
-    if (!playing || drift > 0.2) {
-      if (sourceTime >= 0 && sourceTime !== lastSeekRef.current) {
-        try {
-          v.currentTime = Math.max(0, sourceTime)
-          lastSeekRef.current = sourceTime
-        } catch {
-          /* ignore */
-        }
+    // Always seek when paused (scrub feel); when playing only correct large drift
+    // (avoid micro-stutter from constant seeks).
+    if (!playing || drift > 0.25) {
+      try {
+        v.currentTime = sourceTime
+      } catch {
+        /* ignore */
       }
     }
-  }, [active, playing, sourceTime])
+  }, [sourceTime, playing, ready])
 
-  // Play/pause to follow transport.
+  // Follow the transport.
   useEffect(() => {
     const v = ref.current
-    if (!v) return
-    if (active && playing) {
+    if (!v || !ready) return
+    if (playing) {
       v.play().catch(() => {
-        /* autoplay restrictions; user gesture required */
+        /* autoplay blocked — user gesture required */
       })
     } else {
       v.pause()
     }
-  }, [active, playing])
-
-  // Volume + mute updates.
-  useEffect(() => {
-    const v = ref.current
-    if (!v) return
-    v.volume = Math.max(0, Math.min(1, volume))
-    v.muted = muted
-  }, [volume, muted])
+  }, [playing, ready])
 
   return (
     <video
       ref={ref}
-      src={src}
+      src={clip.sourceUrl}
+      // crossOrigin lets the canvas read frames if we ever want to grab a
+      // thumbnail; Supabase Storage sends permissive CORS so this is fine.
+      crossOrigin="anonymous"
       playsInline
-      preload="metadata"
-      muted={muted}
-      data-clip-id={clipId}
-      className={cn(
-        'absolute inset-0 h-full w-full object-contain',
-        visible ? 'opacity-100' : 'opacity-0',
-        isAudio && 'sr-only',
-      )}
-      aria-hidden={!visible}
+      preload="auto"
+      className="absolute inset-0 h-full w-full object-contain"
     />
   )
+}
+
+/* ─────────────────────── Audio mixer (hidden element) ─────────────────── */
+
+function AudioSurface({
+  clip,
+  playhead,
+  playing,
+}: {
+  clip: TimelineClip
+  playhead: number
+  playing: boolean
+}) {
+  const ref = useRef<HTMLAudioElement>(null)
+  const sourceTime = Math.max(0, clip.sourceStart + (playhead - clip.timelineStart))
+  const [ready, setReady] = useState(false)
+
+  useEffect(() => {
+    const a = ref.current
+    if (!a) return
+    setReady(false)
+    a.preload = 'auto'
+    a.muted = clip.muted ?? false
+    a.volume = Math.max(0, Math.min(1, clip.volume ?? 1))
+    const onLoaded = () => {
+      try {
+        a.currentTime = sourceTime
+      } catch {
+        /* ignore */
+      }
+      setReady(true)
+    }
+    a.addEventListener('loadeddata', onLoaded)
+    a.load()
+    return () => {
+      a.removeEventListener('loadeddata', onLoaded)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clip.sourceUrl])
+
+  useEffect(() => {
+    const a = ref.current
+    if (!a || !ready) return
+    const drift = Math.abs(a.currentTime - sourceTime)
+    if (!playing || drift > 0.25) {
+      try {
+        a.currentTime = sourceTime
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [sourceTime, playing, ready])
+
+  useEffect(() => {
+    const a = ref.current
+    if (!a || !ready) return
+    if (playing) {
+      a.play().catch(() => {
+        /* autoplay blocked */
+      })
+    } else {
+      a.pause()
+    }
+  }, [playing, ready])
+
+  return <audio ref={ref} src={clip.sourceUrl} preload="auto" className="sr-only" />
 }
