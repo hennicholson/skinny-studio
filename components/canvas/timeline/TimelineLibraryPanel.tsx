@@ -79,8 +79,13 @@ export function TimelineLibraryPanel({
   collapsed = false,
   onToggleCollapse,
 }: TimelineLibraryPanelProps) {
-  const videoUploads = uploads.filter((u) => (u.kind ?? 'video') === 'video')
-  const audioUploads = uploads.filter((u) => u.kind === 'audio' || u.contentType?.startsWith('audio'))
+  // Defensive: legacy timeline docs may be missing arrays. The hook
+  // normalizes, but mirror it here so a stale parent state can't crash us.
+  const safeUploads = Array.isArray(uploads) ? uploads : []
+  const safeCanvasNodes = Array.isArray(canvasNodes) ? canvasNodes : []
+  const safeHubVideoGens = Array.isArray(hubVideoGens) ? hubVideoGens : []
+  const videoUploads = safeUploads.filter((u) => (u.kind ?? 'video') === 'video')
+  const audioUploads = safeUploads.filter((u) => u.kind === 'audio' || u.contentType?.startsWith('audio'))
 
   return (
     <aside
@@ -116,22 +121,22 @@ export function TimelineLibraryPanel({
           <LibrarySection
             label="Canvas videos"
             icon={<Film className="h-3 w-3" />}
-            count={canvasNodes.length}
+            count={safeCanvasNodes.length}
             empty="Generate a video on the canvas to drag it in."
           >
-            {canvasNodes.map((node) => (
+            {safeCanvasNodes.map((node) => (
               <CanvasNodeRow key={node.id} node={node} onAdd={onAdd} />
             ))}
           </LibrarySection>
 
           {/* Skinny Hub — past video gens from anywhere in the user's history */}
-          {hubVideoGens.length > 0 && (
+          {safeHubVideoGens.length > 0 && (
             <LibrarySection
               label="Skinny Hub"
               icon={<Sparkles className="h-3 w-3" />}
-              count={hubVideoGens.length}
+              count={safeHubVideoGens.length}
             >
-              {hubVideoGens.map((gen) => (
+              {safeHubVideoGens.map((gen) => (
                 <HubGenRow key={gen.id} gen={gen} onAdd={onAdd} />
               ))}
             </LibrarySection>

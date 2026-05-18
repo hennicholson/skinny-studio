@@ -153,12 +153,27 @@ export function TimelineProvider({
           return
         }
         if (!res.ok) throw new Error(`Failed to load timeline (${res.status})`)
-        const json = (await res.json()) as Timeline
+        // Server may return Timeline or {timeline: Timeline} depending on route.
+        const raw = (await res.json()) as Timeline | { timeline: Timeline }
+        const json = (raw && 'timeline' in raw ? raw.timeline : raw) as Timeline | undefined
         if (cancelled) return
-        setTimeline({
+        if (!json) {
+          setTimeline(blankTimeline(canvasId))
+          return
+        }
+        // Defensive normalize — older stored documents may be missing arrays
+        // (the IR shape changed during dev). Accessing .length on undefined
+        // crashes downstream components. Coerce everything we depend on.
+        const blank = blankTimeline(canvasId)
+        const normalized: Timeline = {
+          ...blank,
           ...json,
-          durationSeconds: deriveDuration(json.clips ?? []),
-        })
+          tracks: Array.isArray(json.tracks) && json.tracks.length > 0 ? json.tracks : blank.tracks,
+          clips: Array.isArray(json.clips) ? json.clips : [],
+          uploads: Array.isArray(json.uploads) ? json.uploads : [],
+          durationSeconds: deriveDuration(Array.isArray(json.clips) ? json.clips : []),
+        }
+        setTimeline(normalized)
       })
       .catch((err) => {
         if (cancelled) return

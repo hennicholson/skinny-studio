@@ -97,6 +97,7 @@ import { validateImage, fileToBase64 } from '@/lib/image-utils'
 import { analyzeReferenceImage } from '@/lib/canvas/vision'
 // Timeline mode (built by timeline agents — additive, does not touch canvas IR)
 import { TimelineEditor, type CanvasVideoNodeLite } from './timeline'
+import { TimelineErrorBoundary } from './timeline/TimelineErrorBoundary'
 
 interface CanvasShellProps {
   initial: Canvas
@@ -1961,6 +1962,7 @@ function CanvasInner({
               exit={{ opacity: 0, y: -4 }}
               transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
             >
+              <TimelineErrorBoundary onSwitchToCanvas={() => setMode('canvas')}>
               <TimelineEditor
                 canvasId={initial.id}
                 getWhopHeaders={getWhopHeaders}
@@ -1990,6 +1992,7 @@ function CanvasInner({
                   setMode('canvas')
                 }}
               />
+              </TimelineErrorBoundary>
             </motion.div>
           ) : (
             <motion.div
