@@ -426,7 +426,7 @@ function TimelineEditorInner({ canvasVideoNodes = [], onAddRenderToCanvas, onSwi
               onUploadAdded={addUpload}
               onClipAdded={addClip}
               getWhopHeaders={getWhopHeaders}
-              ref={audioPickRef}
+              pickerRef={audioPickRef}
             />
           </span>
           <TimelineSettingsDropdown timeline={timeline} onChange={setSettings} />

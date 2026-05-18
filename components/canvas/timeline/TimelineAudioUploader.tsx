@@ -26,8 +26,12 @@ export interface TimelineAudioUploaderProps {
   getWhopHeaders: () => Record<string, string>
   /** Optional: receives the imperative "pick file" trigger so other parts
    *  of the editor (e.g. the library panel's + button) can open the picker
-   *  without owning a hidden <input>. */
-  ref?: MutableRefObject<(() => void) | (() => void)> | { current: () => void }
+   *  without owning a hidden <input>.
+   *
+   *  Not called `ref` because React 18 reserves that prop on function
+   *  components (only flows through via forwardRef). Renamed to pickerRef
+   *  so it passes through as a normal prop. */
+  pickerRef?: MutableRefObject<(() => void)> | { current: () => void }
 }
 
 export function TimelineAudioUploader({
@@ -36,7 +40,7 @@ export function TimelineAudioUploader({
   onUploadAdded,
   onClipAdded,
   getWhopHeaders,
-  ref,
+  pickerRef,
 }: TimelineAudioUploaderProps) {
   const fileRef = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState(false)
@@ -50,10 +54,10 @@ export function TimelineAudioUploader({
 
   // Expose the picker to external triggers.
   useEffect(() => {
-    if (ref && 'current' in ref) {
-      ref.current = onPick
+    if (pickerRef && 'current' in pickerRef) {
+      pickerRef.current = onPick
     }
-  }, [ref, onPick])
+  }, [pickerRef, onPick])
 
   const handleFile = useCallback(
     async (file: File) => {
