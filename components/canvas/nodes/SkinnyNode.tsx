@@ -164,7 +164,9 @@ function SkinnyNodeBase({ id, data, selected }: NodeProps<any>) {
             isRunning={status === 'running'}
             globallyRunning={actions.isRunning}
             onRun={() => actions.runFromNode(id)}
-            onStop={() => actions.stopRun()}
+            // Aborts only the run that contains THIS node — other concurrent
+            // runs (massive-gen mode) keep going.
+            onStop={() => actions.stopRunForNode(id)}
           />
         )}
       </div>
@@ -782,12 +784,15 @@ function TextBody({ data, nodeType }: { data: SkinnyNodeData; nodeType: NodeType
 
 /**
  * Per-node Run button (image-gen / video-gen only).
- * - Idle / done / error: shows ▶ Play. Click runs this node + all ancestors.
- * - Running THIS node: shows a spinning loader, click stops the active run.
- * - Running OTHER nodes: shows a DIMMED Play (disabled). The canonical Stop
- *   sits in the TopBar — we used to repeat it on every idle node here, which
- *   made it look like clicking any node would stop the whole run (and made
- *   users think they couldn't queue up multiple gens at once).
+ * - Idle / done / error: shows ▶ Play. Click runs this node + all ancestors —
+ *   even when OTHER runs are in flight (multi-run / "massive gen" mode).
+ * - Running THIS node: shows a spinning loader, click aborts ONLY the run
+ *   that contains this node (other concurrent runs keep going).
+ *
+ * We deliberately don't disable or grey out the Play button when other runs
+ * are active — that was the previous UX flaw users hit ("I can't fire more
+ * gens at the same time"). The hard limit is the MAX_CONCURRENT_RUNS guard
+ * in executeSubgraph, which surfaces as a toast if hit.
  */
 function NodeRunButton({
   nodeId,
@@ -798,10 +803,14 @@ function NodeRunButton({
 }: {
   nodeId: string
   isRunning: boolean
+  /** Provided for analytics / future use; we no longer change the UI based
+   *  on it — multi-run is allowed. */
   globallyRunning: boolean
   onRun: () => void
   onStop: () => void
 }) {
+  // `globallyRunning` is intentionally unused for rendering — see comment above.
+  void globallyRunning
   const stop = (e: React.MouseEvent) => {
     e.stopPropagation()
     onStop()
@@ -810,32 +819,16 @@ function NodeRunButton({
     e.stopPropagation()
     onRun()
   }
-  // Per-node action chip sits inside the node footer (28px column-width is
-  // tight); we bump min-hit to 24x24 + 6px pad via a hit-expand pseudo so the
-  // tap target meets touch guidance even though the visible chip stays small.
   if (isRunning) {
     return (
       <button
         type="button"
         onClick={stop}
         aria-label="Stop this run"
-        title="Stop this run"
+        title="Stop this run (other runs keep going)"
         className="relative shrink-0 h-6 w-6 rounded-md bg-rose-500/15 ring-1 ring-rose-500/40 hover:bg-rose-500/25 text-rose-300 flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400/60 transition-colors after:absolute after:-inset-1 after:content-['']"
       >
         <Loader2 size={11} className="animate-spin" aria-hidden />
-      </button>
-    )
-  }
-  if (globallyRunning) {
-    return (
-      <button
-        type="button"
-        disabled
-        aria-label="Waiting for active run to finish"
-        title="A run is in progress — select multiple nodes and use Run Selected to batch."
-        className="relative shrink-0 h-6 w-6 rounded-md bg-white/[0.03] ring-1 ring-white/[0.05] text-zinc-600 flex items-center justify-center cursor-not-allowed after:absolute after:-inset-1 after:content-['']"
-      >
-        <Play size={10} fill="currentColor" aria-hidden className="opacity-50" />
       </button>
     )
   }
@@ -844,7 +837,7 @@ function NodeRunButton({
       type="button"
       onClick={run}
       aria-label="Run this node and all upstream"
-      title="Run this node (+ everything upstream)"
+      title="Run this node (+ everything upstream) — runs in parallel with other in-flight gens"
       className="relative shrink-0 h-6 w-6 rounded-md bg-skinny-yellow/15 ring-1 ring-skinny-yellow/40 hover:bg-skinny-yellow/30 text-skinny-yellow flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-skinny-yellow/60 transition-colors after:absolute after:-inset-1 after:content-['']"
     >
       <Play size={10} fill="currentColor" aria-hidden />

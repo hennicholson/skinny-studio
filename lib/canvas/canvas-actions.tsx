@@ -20,10 +20,14 @@ export interface CanvasActions {
   // ---- Run controls (existing) ------------------------------------------
   /** Run a single model node + everything upstream of it. */
   runFromNode: (nodeId: string) => void
-  /** True while a run is in flight (so per-node buttons can show stop). */
+  /** True while one OR MORE runs are in flight. Multi-run is allowed —
+   *  callers should NOT use this to disable other nodes' Run buttons. */
   isRunning: boolean
-  /** Stop the current run (if any). */
+  /** Abort EVERY active run. Used by the TopBar's global Stop button. */
   stopRun: () => void
+  /** Abort just the run that contains this node id. Used by the per-node
+   *  spinner so killing one run doesn't kill the others. */
+  stopRunForNode: (nodeId: string) => void
 
   // ---- Per-generation navigation (existing) ----------------------------
   /** Flip to the previous (delta=-1) or next (delta=+1) saved generation

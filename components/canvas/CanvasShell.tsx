@@ -175,7 +175,15 @@ function CanvasInner({
     initial.edges.map((e) => toRFEdge(e, edgeStrokeFor(e, initial.nodes))),
   )
   const [tool, setTool] = useState<Tool>('select')
-  const [running, setRunning] = useState(false)
+  // Multi-run state: we track every concurrent executeSubgraph invocation in
+  // an imperative map (so we can stop them individually or all at once) AND
+  // mirror its size into React state so derived UI (TopBar, NodeRunButton,
+  // autosave gate) re-renders. `running` is just `activeRunCount > 0`.
+  const runsRef = useRef<
+    Map<string, { controller: AbortController; nodeIds: Set<string> }>
+  >(new Map())
+  const [activeRunCount, setActiveRunCount] = useState(0)
+  const running = activeRunCount > 0
   const [saving, setSaving] = useState(false)
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(
     initial.updatedAt ? new Date(initial.updatedAt) : null,
@@ -212,7 +220,6 @@ function CanvasInner({
   void initialSession
 
   // ===== refs =====
-  const abortRef = useRef<AbortController | null>(null)
   const isFirstAutosave = useRef(true)
   const rfInstance = useReactFlow()
   const { screenToFlowPosition } = rfInstance
@@ -578,12 +585,49 @@ function CanvasInner({
       subsetNodes: CanvasNode[],
       execOpts?: { forceRerun?: Set<string> },
     ) => {
-      if (running) return
       if (subsetNodes.length === 0) {
         toast.error('Nothing to run')
         return
       }
+
+      // Multi-run dedupe. Any gen node that's already executing in another
+      // in-flight run is silently EXCLUDED from this run's force-rerun set —
+      // we keep it in the subset (so downstream nodes still see it as a
+      // pending input) but don't ask the executor to re-bill it. Static
+      // input nodes are always safe to share across runs.
+      const inFlightGenIds = new Set<string>()
+      for (const r of Array.from(runsRef.current.values())) {
+        for (const id of Array.from(r.nodeIds)) inFlightGenIds.add(id)
+      }
+      // Sanitize the caller's forceRerun: drop ids that are already in flight.
+      const sanitizedForceRerun = execOpts?.forceRerun
+        ? new Set(
+            Array.from(execOpts.forceRerun).filter((id) => !inFlightGenIds.has(id)),
+          )
+        : undefined
+      // If the user explicitly clicked Play on a single node that's already
+      // running, the sanitized set goes empty — block with a clear toast so
+      // we don't silently no-op.
+      if (
+        execOpts?.forceRerun &&
+        execOpts.forceRerun.size > 0 &&
+        sanitizedForceRerun &&
+        sanitizedForceRerun.size === 0
+      ) {
+        toast.error('Already generating — wait or stop the active run')
+        return
+      }
       const subsetIds = new Set(subsetNodes.map((n) => n.id))
+
+      // Soft cap so a runaway batch can't flood Replicate. Tuned for "massive
+      // gen" — users running 5+ video gens in parallel is the use case here,
+      // but 8 concurrent runs is plenty of headroom.
+      const MAX_CONCURRENT_RUNS = 8
+      if (runsRef.current.size >= MAX_CONCURRENT_RUNS) {
+        toast.error(`Max ${MAX_CONCURRENT_RUNS} parallel runs — wait for one to finish`)
+        return
+      }
+
       const subsetEdges = canvas.edges.filter(
         (e) => subsetIds.has(e.source) && subsetIds.has(e.target),
       )
@@ -592,16 +636,31 @@ function CanvasInner({
         const m = modelBySlug.get(n.data.modelSlug)
         return acc + (m ? estimateCanvasCost({ ...canvas, nodes: [n], edges: [] }, modelBySlug) : 0)
       }, 0)
-      setRunning(true)
+
+      // Register this run in the active-runs map so the TopBar Stop can abort
+      // it, NodeRunButton can find which controller to abort for the node it
+      // belongs to, and concurrent calls can see what's in flight.
+      const runKey = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+      const controller = new AbortController()
+      // Only the GEN nodes from this subset count toward in-flight tracking —
+      // static input nodes are fine to share across runs.
+      const trackedNodeIds = new Set<string>(
+        subsetNodes
+          .filter(
+            (n) => n.type === 'image-gen' || n.type === 'video-gen' || n.type === 'fan-out',
+          )
+          .map((n) => n.id),
+      )
+      runsRef.current.set(runKey, { controller, nodeIds: trackedNodeIds })
+      setActiveRunCount(runsRef.current.size)
       runTracker.startRun(canvas.id, subsetCost || estimatedCost)
-      abortRef.current = new AbortController()
       // Reset status only on nodes that will ACTUALLY execute this run.
       // Cached gen nodes upstream (not in forceRerun, already have outputUrls)
       // are short-circuited inside executor.executeNode — their saved
       // generations are reused as static inputs. We deliberately leave their
       // 'done' status and outputUrls untouched here so the UI doesn't flash
       // them through idle → done (which looked like a re-run to users).
-      const forceRerunIds = execOpts?.forceRerun
+      const forceRerunIds = sanitizedForceRerun ?? execOpts?.forceRerun
       const willActuallyRun = (n: { id: string; type: string; data: any }) => {
         if (!subsetIds.has(n.id)) return false
         // Static input nodes never run; their status stays as-is.
@@ -668,13 +727,13 @@ function CanvasInner({
             edges: subsetEdges,
           },
           {
-            signal: abortRef.current.signal,
+            signal: controller.signal,
             getWhopHeaders,
             // Per-node Run hot-path: only the explicitly-targeted node(s)
             // re-execute. Cached gen-node outputs upstream are treated as
             // static inputs — no double-billing for re-running images the
             // user already has saved in Skinny Hub.
-            forceRerun: execOpts?.forceRerun,
+            forceRerun: forceRerunIds,
             // Tag each generation with `_skinny_source` via the executor so
             // canvas-run rows in the `generations` table are identifiable
             // and joinable back to the canvas run that produced them.
@@ -781,8 +840,8 @@ function CanvasInner({
         if (!didAbort) toast.error(`Run failed: ${msg}`)
       } finally {
         runTracker.endRun(didSucceed)
-        setRunning(false)
-        abortRef.current = null
+        runsRef.current.delete(runKey)
+        setActiveRunCount(runsRef.current.size)
 
         // ===== Finalize run telemetry =====
         // Always fire-and-forget — never block the UI on telemetry.
@@ -854,17 +913,33 @@ function CanvasInner({
   )
 
   // The TopBar's Run button opens PreRunCheck first; PreRunCheck's onConfirm
-  // is what actually fires the run.
+  // is what actually fires the run. Concurrent runs are allowed — the dialog
+  // is allowed to open even when other runs are in flight; executeSubgraph
+  // will dedupe against in-flight nodes when it actually fires.
   const openRunCheck = useCallback(() => {
-    if (running) return
     if (canvas.nodes.length === 0) {
       toast.error('Canvas is empty')
       return
     }
     setPreRunOpen(true)
-  }, [running, canvas.nodes.length])
+  }, [canvas.nodes.length])
 
-  const stop = useCallback(() => abortRef.current?.abort(), [])
+  // Top-bar Stop = abort every active run.
+  const stop = useCallback(() => {
+    for (const r of Array.from(runsRef.current.values())) r.controller.abort()
+  }, [])
+
+  // Per-node Stop = abort just the run that contains this node. Falls back
+  // to no-op if we somehow don't have a matching run (e.g. it just finished
+  // between render and click).
+  const stopRunForNode = useCallback((nodeId: string) => {
+    for (const r of Array.from(runsRef.current.values())) {
+      if (r.nodeIds.has(nodeId)) {
+        r.controller.abort()
+        return
+      }
+    }
+  }, [])
 
   // Drag-drop: two paths share this handler.
   //
@@ -1977,6 +2052,7 @@ function CanvasInner({
         runFromNode: doRunFromNode,
         isRunning: running,
         stopRun: stop,
+        stopRunForNode,
         cycleGeneration,
         setGenerationLabel,
         addNode,
