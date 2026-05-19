@@ -124,7 +124,13 @@ export const SHORTCUTS: Shortcut[] = [
   {
     id: 'run-all',
     keys: ['⌘', 'Enter'],
-    description: 'Run all nodes',
+    description: 'Run all nodes (or selected when 2+ are marquee-selected)',
+    group: 'run',
+  },
+  {
+    id: 'run-selected',
+    keys: ['m'],
+    description: 'Switch to marquee, drag to select multiple nodes → ⌘↵ runs only them',
     group: 'run',
   },
   {

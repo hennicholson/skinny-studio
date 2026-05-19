@@ -43,6 +43,9 @@ interface TopBarProps {
   estimatedCostCents: number
   /** Optional: number of nodes — when 0, Run becomes disabled w/ tooltip. */
   nodeCount?: number
+  /** Number of gen-able nodes the user has marquee-selected. When ≥ 2 (or ≥ 1
+   *  but < nodeCount), the run button auto-switches to "Run selected (N)". */
+  selectedRunnableCount?: number
 }
 
 export function TopBar({
@@ -58,12 +61,19 @@ export function TopBar({
   onSignOut,
   estimatedCostCents,
   nodeCount,
+  selectedRunnableCount,
 }: TopBarProps) {
   const { whop, balanceCents, balanceDollars, profile, isLoading } = useUser()
   const username = whop?.username || whop?.unique_id || null
   const lifetime = !!profile?.lifetime_access
   const lowBalance = !lifetime && balanceCents < 100
   const canRun = (nodeCount ?? 1) > 0
+  // "Run selected" mode kicks in when the user has marquee-selected ≥ 2
+  // runnable nodes (or just 1 — clicking the button still does the right
+  // thing). We don't switch when the whole canvas is selected (count
+  // === nodeCount); that's just "Run all" by another name.
+  const selectedCount = selectedRunnableCount ?? 0
+  const isSelectedMode = selectedCount >= 2 && selectedCount < (nodeCount ?? 0)
 
   return (
     <header className="relative z-30 h-14 px-3 sm:px-4 flex items-center gap-1.5 sm:gap-2 bg-zinc-950/85 backdrop-blur-md border-b border-white/[0.06] shrink-0">
@@ -160,7 +170,16 @@ export function TopBar({
             <span className="hidden sm:inline">Stop</span>
           </motion.button>
         ) : (
-          <Tooltip label={canRun ? '' : 'Add a node to run'} side="bottom">
+          <Tooltip
+            label={
+              canRun
+                ? isSelectedMode
+                  ? `Run only the ${selectedCount} selected node${selectedCount === 1 ? '' : 's'} (⌘↵)`
+                  : ''
+                : 'Add a node to run'
+            }
+            side="bottom"
+          >
             <motion.button
               type="button"
               whileHover={canRun ? { scale: 1.02 } : undefined}
@@ -168,16 +187,44 @@ export function TopBar({
               onClick={canRun ? onRun : undefined}
               disabled={!canRun}
               aria-disabled={!canRun}
-              aria-label={canRun ? 'Run all nodes' : 'Run all nodes (add a node first)'}
+              aria-label={
+                canRun
+                  ? isSelectedMode
+                    ? `Run ${selectedCount} selected nodes`
+                    : 'Run all nodes'
+                  : 'Run all nodes (add a node first)'
+              }
               className={`flex items-center gap-1.5 h-9 sm:h-8 px-3 rounded-md text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-skinny-yellow/60 transition-colors ${
                 canRun
-                  ? 'bg-white text-zinc-900 hover:bg-zinc-100'
+                  ? isSelectedMode
+                    ? 'bg-skinny-yellow/15 ring-1 ring-skinny-yellow/40 text-skinny-yellow hover:bg-skinny-yellow/25'
+                    : 'bg-white text-zinc-900 hover:bg-zinc-100'
                   : 'bg-white/[0.06] text-zinc-500 ring-1 ring-white/[0.06] cursor-not-allowed opacity-60'
               }`}
             >
-              <Play size={11} fill="currentColor" className={canRun ? 'text-skinny-green' : 'text-zinc-600'} aria-hidden />
-              <span className="hidden sm:inline">Run all</span>
-              <span className="sm:hidden">Run</span>
+              <Play
+                size={11}
+                fill="currentColor"
+                className={
+                  canRun
+                    ? isSelectedMode
+                      ? 'text-skinny-yellow'
+                      : 'text-skinny-green'
+                    : 'text-zinc-600'
+                }
+                aria-hidden
+              />
+              {isSelectedMode ? (
+                <>
+                  <span className="hidden sm:inline">Run selected ({selectedCount})</span>
+                  <span className="sm:hidden">Run ({selectedCount})</span>
+                </>
+              ) : (
+                <>
+                  <span className="hidden sm:inline">Run all</span>
+                  <span className="sm:hidden">Run</span>
+                </>
+              )}
             </motion.button>
           </Tooltip>
         )}

@@ -268,6 +268,50 @@ function CanvasInner({
     [canvas.nodes, settingsNodeId],
   )
 
+  // Runnable node types (mirrors the executor's "this actually consumes
+  // Replicate" filter from CanvasShell.executeSubgraph above).
+  const RUNNABLE_TYPES = useMemo(
+    () => new Set(['image-gen', 'video-gen', 'fan-out']),
+    [],
+  )
+  // Marquee-selected runnable nodes. When ≥ 2 (but < total), the TopBar's
+  // primary action flips from "Run all" → "Run selected (N)" and only those
+  // nodes + their transitive ancestors execute. RF nodes wrap our IR type
+  // inside `data.nodeType` (see toRFNode) — read from there.
+  const selectedRunnableIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const n of rfNodes) {
+      if (!n.selected) continue
+      const nodeType = (n.data as any)?.nodeType as string | undefined
+      if (nodeType && RUNNABLE_TYPES.has(nodeType)) ids.add(n.id)
+    }
+    return ids
+  }, [rfNodes, RUNNABLE_TYPES])
+  const totalRunnableCount = useMemo(
+    () => canvas.nodes.filter((n) => RUNNABLE_TYPES.has(n.type)).length,
+    [canvas.nodes, RUNNABLE_TYPES],
+  )
+  const inSelectedMode =
+    selectedRunnableIds.size >= 2 && selectedRunnableIds.size < totalRunnableCount
+  // Subset canvas + cost for the PreRunCheck modal when in selected mode.
+  // Falls back to the full canvas otherwise.
+  const preRunScope = useMemo(() => {
+    if (!inSelectedMode) return { canvas, cost: estimatedCost }
+    const need = new Set<string>(Array.from(selectedRunnableIds))
+    Array.from(selectedRunnableIds).forEach((id) => {
+      Array.from(ancestorsOf(id, canvas.edges)).forEach((a) => need.add(a))
+    })
+    const subsetNodes = canvas.nodes.filter((n) => need.has(n.id))
+    const subsetEdges = canvas.edges.filter(
+      (e) => need.has(e.source) && need.has(e.target),
+    )
+    const subsetCanvas: Canvas = { ...canvas, nodes: subsetNodes, edges: subsetEdges }
+    return {
+      canvas: subsetCanvas,
+      cost: estimateCanvasCost(subsetCanvas, modelBySlug),
+    }
+  }, [inSelectedMode, selectedRunnableIds, canvas, estimatedCost, modelBySlug])
+
   // ===== react-flow handlers =====
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     setRfNodes((nds) => applyNodeChanges(changes, nds))
@@ -765,11 +809,23 @@ function CanvasInner({
     [running, canvas, estimatedCost, modelBySlug, patchNode, getWhopHeaders, refreshUser, demoMode],
   )
 
-  // Full-canvas run.
+  // Full-canvas run (or selected-subgraph run when ≥ 2 runnable nodes are
+  // marquee-selected). Either way: force-rerun every gen node in scope so the
+  // user gets fresh outputs — caching only applies on per-node Run, not the
+  // batch button.
   const doRun = useCallback(() => {
-    // Run all = re-execute every gen node explicitly (force-rerun the whole
-    // pipeline regardless of cached outputs — that's the contract of the
-    // TopBar's Run all button).
+    if (inSelectedMode) {
+      // Build a subgraph from the selected runnable nodes + their transitive
+      // ancestors (so upstream prompts / refs / entities are wired in). Only
+      // the selected nodes get forceRerun — upstream gens stay cached.
+      const need = new Set<string>(Array.from(selectedRunnableIds))
+      Array.from(selectedRunnableIds).forEach((id) => {
+        Array.from(ancestorsOf(id, canvas.edges)).forEach((a) => need.add(a))
+      })
+      const subset = canvas.nodes.filter((n) => need.has(n.id))
+      executeSubgraph(subset, { forceRerun: new Set(Array.from(selectedRunnableIds)) })
+      return
+    }
     const forceRerun = new Set(
       canvas.nodes
         .filter(
@@ -778,7 +834,7 @@ function CanvasInner({
         .map((n) => n.id),
     )
     executeSubgraph(canvas.nodes, { forceRerun })
-  }, [executeSubgraph, canvas.nodes])
+  }, [executeSubgraph, canvas.nodes, canvas.edges, inSelectedMode, selectedRunnableIds])
 
   // Per-node run: target + all transitive ancestors are passed to the executor
   // so the subgraph is visible (downstream needs upstream's emit() output),
@@ -1945,6 +2001,7 @@ function CanvasInner({
         onSignOut={handleSignOut}
         estimatedCostCents={estimatedCost}
         nodeCount={rfNodes.length}
+        selectedRunnableCount={selectedRunnableIds.size}
       />
 
       <div
@@ -2148,11 +2205,12 @@ function CanvasInner({
           setPreRunOpen(false)
           doRun()
         }}
-        estimatedCostCents={estimatedCost}
-        canvas={canvas}
+        // When the user has marquee-selected a subset, show the cost +
+        // preflight for just that subgraph (selected nodes + their ancestors),
+        // not the full canvas.
+        estimatedCostCents={preRunScope.cost}
+        canvas={preRunScope.canvas}
         onSelectNode={(id) => {
-          // "Jump to node" affordance from preflight errors: close the modal
-          // and open the node's settings drawer so the user can fix the issue.
           setPreRunOpen(false)
           setSettingsNodeId(id)
         }}

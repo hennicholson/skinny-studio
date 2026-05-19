@@ -16,7 +16,7 @@
 import { memo, useCallback, useState } from 'react'
 import { Handle, Position, NodeProps } from '@xyflow/react'
 import { motion } from 'framer-motion'
-import { AlertCircle, Play, Loader2, Square, ChevronLeft, ChevronRight } from 'lucide-react'
+import { AlertCircle, Play, Loader2, ChevronLeft, ChevronRight } from 'lucide-react'
 import { NODE_TYPES, NodeType, NodeStatus, HandleType, HandleDef } from '@/lib/canvas/ir'
 import { colorFor } from '../handle-colors'
 import { useCanvasActions } from '@/lib/canvas/canvas-actions'
@@ -783,9 +783,11 @@ function TextBody({ data, nodeType }: { data: SkinnyNodeData; nodeType: NodeType
 /**
  * Per-node Run button (image-gen / video-gen only).
  * - Idle / done / error: shows ▶ Play. Click runs this node + all ancestors.
- * - Running THIS node: shows a spinning loader (no-op click).
- * - Running OTHER nodes: shows Stop (lets the user abort the whole run from
- *   any in-flight model node).
+ * - Running THIS node: shows a spinning loader, click stops the active run.
+ * - Running OTHER nodes: shows a DIMMED Play (disabled). The canonical Stop
+ *   sits in the TopBar — we used to repeat it on every idle node here, which
+ *   made it look like clicking any node would stop the whole run (and made
+ *   users think they couldn't queue up multiple gens at once).
  */
 function NodeRunButton({
   nodeId,
@@ -828,12 +830,12 @@ function NodeRunButton({
     return (
       <button
         type="button"
-        onClick={stop}
-        aria-label="Stop run"
-        title="Stop run"
-        className="relative shrink-0 h-6 w-6 rounded-md bg-white/[0.05] ring-1 ring-white/[0.08] hover:bg-white/[0.10] text-zinc-400 flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-skinny-yellow/50 transition-colors after:absolute after:-inset-1 after:content-['']"
+        disabled
+        aria-label="Waiting for active run to finish"
+        title="A run is in progress — select multiple nodes and use Run Selected to batch."
+        className="relative shrink-0 h-6 w-6 rounded-md bg-white/[0.03] ring-1 ring-white/[0.05] text-zinc-600 flex items-center justify-center cursor-not-allowed after:absolute after:-inset-1 after:content-['']"
       >
-        <Square size={9} fill="currentColor" aria-hidden />
+        <Play size={10} fill="currentColor" aria-hidden className="opacity-50" />
       </button>
     )
   }
