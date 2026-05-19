@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server'
 import { sbAdmin } from '@/lib/supabaseAdmin'
 import { getWhopAuthFromHeaders, verifyWhopTokenAndGetProfile, hasWhopAuth } from '@/lib/whop'
 import { rateLimit, getRateLimitKey, RATE_LIMITS } from '@/lib/rate-limit'
+import { resolveVideoCost, detectHasReferenceVideos } from '@/lib/video-pricing'
 import { v4 as uuidv4 } from 'uuid'
 
 export const runtime = 'nodejs'
@@ -37,39 +38,11 @@ interface GenerateRequest {
   noWait?: boolean
 }
 
-// Calculate cost for video models (per-second pricing)
-// Handles: resolution multipliers (Wan 2.5), audio toggle pricing (Veo 3.1)
-function calculateVideoCost(
-  studioModel: any,
-  duration: number,
-  resolution: string,
-  generateAudio?: boolean
-): number {
-  if (studioModel.pricing_type !== 'per_second') {
-    return studioModel.cost_per_run_cents || 0
-  }
-
-  let baseCostPerSecond = studioModel.cost_per_second_cents || 0
-
-  // Check for audio-based pricing in parameter_schema (Veo models)
-  const paramSchema = studioModel.parameter_schema || {}
-  const audioParam = paramSchema.generate_audio
-
-  if (audioParam?.pricing) {
-    // Veo models have different pricing based on audio toggle
-    // Default to audio ON if not explicitly set to false
-    const hasAudio = generateAudio !== false
-    baseCostPerSecond = hasAudio
-      ? audioParam.pricing.with_audio_cents_per_second
-      : audioParam.pricing.without_audio_cents_per_second
-  }
-
-  // Apply resolution multiplier (for Wan 2.5 models)
-  const multipliers = studioModel.resolution_multipliers || {}
-  const resolutionMultiplier = multipliers[resolution] || 1.0
-
-  return Math.ceil(baseCostPerSecond * duration * resolutionMultiplier)
-}
+// Video cost is now resolved by lib/video-pricing.resolveVideoCost — it
+// handles enum durations (Veo), range durations (Seedance), -1 sentinel,
+// Veo audio toggle pricing, and Seedance's _pricing.per_resolution matrix
+// with the video-in premium row. Kept this comment as a signpost so future
+// readers don't re-introduce the duplicate function.
 
 // Initialize Replicate client
 const replicate = new Replicate({
@@ -271,39 +244,32 @@ export async function POST(request: Request) {
 
     // Calculate cost based on pricing type
     let costCents = 0
-    let effectiveDuration = duration
-    let effectiveResolution = resolution
-    let effectiveGenerateAudio = generateAudio
+    let effectiveDuration: number | undefined = duration
+    let effectiveResolution: string | undefined = resolution
+    let effectiveGenerateAudio: boolean | undefined = generateAudio
+    let videoCostRate: number | undefined
+    let videoCostSource: string | undefined
+    let videoInPremium = false
 
     if (studioModel.pricing_type === 'per_second') {
-      // Video model - calculate based on duration, resolution, and audio
-      const paramSchema = studioModel.parameter_schema || {}
-      const durationParam = paramSchema.duration
-      const resolutionParam = paramSchema.resolution
-      const audioParam = paramSchema.generate_audio
-
-      // Get options from parameter_schema or fall back to legacy fields
-      const durationOptions = durationParam?.options || studioModel.duration_options || [5]
-      const resolutionOptions = resolutionParam?.options || studioModel.resolution_options || ['720p']
-
-      // Use provided values or defaults from parameter_schema
-      effectiveDuration = duration ?? durationParam?.default ?? durationOptions[0]
-      effectiveResolution = resolution ?? resolutionParam?.default ?? resolutionOptions[0]
-
-      // Default audio to true for Veo models (as per their parameter_schema)
-      effectiveGenerateAudio = generateAudio ?? audioParam?.default ?? true
-
-      // Validate duration is in allowed options
-      if (!durationOptions.includes(effectiveDuration)) {
-        effectiveDuration = durationOptions[0]
-      }
-
-      // Validate resolution is in allowed options
-      if (!resolutionOptions.includes(effectiveResolution)) {
-        effectiveResolution = resolutionOptions[0]
-      }
-
-      costCents = calculateVideoCost(studioModel, effectiveDuration as number, effectiveResolution as string, effectiveGenerateAudio)
+      // Seedance pricing has a per-resolution + video-in matrix that lives in
+      // parameter_schema._pricing. Detect video-in from the request's nested
+      // params (the canvas executor sends reference_videos there).
+      const hasReferenceVideos = detectHasReferenceVideos(params)
+      const resolved = resolveVideoCost({
+        model: studioModel,
+        duration,
+        resolution,
+        generateAudio,
+        hasReferenceVideos,
+      })
+      costCents = resolved.costCents
+      effectiveDuration = resolved.effectiveDuration
+      effectiveResolution = resolved.effectiveResolution
+      effectiveGenerateAudio = resolved.effectiveGenerateAudio
+      videoCostRate = resolved.rateCentsPerSecond
+      videoCostSource = resolved.source
+      videoInPremium = resolved.videoInPremiumApplied
     } else {
       // Image model - flat rate
       costCents = studioModel.cost_per_run_cents || 0
@@ -883,10 +849,16 @@ export async function POST(request: Request) {
           cost_per_image_cents: costCents,
           total_cost_cents: finalCostCents,
         }),
-        // Video-specific pricing breakdown
+        // Video-specific pricing breakdown — `rate_cents_per_second` is the
+        // actual rate the resolver used (after pricing-matrix + video-in
+        // selection); `source` tells you which lookup branch it came from.
         ...(studioModel.pricing_type === 'per_second' && {
           duration: effectiveDuration,
           resolution: effectiveResolution,
+          rate_cents_per_second: videoCostRate,
+          rate_source: videoCostSource,
+          video_in_premium: videoInPremium,
+          // Kept for backwards-compat with anything that read these:
           cost_per_second_cents: studioModel.cost_per_second_cents,
           resolution_multiplier: studioModel.resolution_multipliers?.[effectiveResolution as string] || 1.0,
           ...(model.startsWith('veo-') && {

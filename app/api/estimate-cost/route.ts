@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { sbAdmin } from '@/lib/supabaseAdmin'
 import { getWhopAuthFromHeaders, verifyWhopTokenAndGetProfile, hasWhopAuth } from '@/lib/whop'
+import { resolveVideoCost, detectHasReferenceVideos } from '@/lib/video-pricing'
 
 export const runtime = 'nodejs'
 
@@ -11,37 +12,9 @@ interface EstimateCostRequest {
   generateAudio?: boolean
   sequentialImageGeneration?: 'disabled' | 'auto'
   maxImages?: number
-}
-
-// Calculate cost for video models (per-second pricing)
-function calculateVideoCost(
-  studioModel: any,
-  duration: number,
-  resolution: string,
-  generateAudio?: boolean
-): number {
-  if (studioModel.pricing_type !== 'per_second') {
-    return studioModel.cost_per_run_cents || 0
-  }
-
-  let baseCostPerSecond = studioModel.cost_per_second_cents || 0
-
-  // Check for audio-based pricing in parameter_schema (Veo models)
-  const paramSchema = studioModel.parameter_schema || {}
-  const audioParam = paramSchema.generate_audio
-
-  if (audioParam?.pricing) {
-    const hasAudio = generateAudio !== false
-    baseCostPerSecond = hasAudio
-      ? audioParam.pricing.with_audio_cents_per_second
-      : audioParam.pricing.without_audio_cents_per_second
-  }
-
-  // Apply resolution multiplier (for Wan 2.5 models)
-  const multipliers = studioModel.resolution_multipliers || {}
-  const resolutionMultiplier = multipliers[resolution] || 1.0
-
-  return Math.ceil(baseCostPerSecond * duration * resolutionMultiplier)
+  /** Optional nested params blob. We inspect it for `reference_videos` to
+   *  apply Seedance's video-in pricing premium during preview. */
+  params?: Record<string, any>
 }
 
 export async function POST(request: Request) {
@@ -76,7 +49,7 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json() as EstimateCostRequest
-    const { model, duration, resolution, generateAudio, sequentialImageGeneration, maxImages } = body
+    const { model, duration, resolution, generateAudio, sequentialImageGeneration, maxImages, params } = body
 
     if (!model) {
       return NextResponse.json({ error: 'Model is required' }, { status: 400 })
@@ -96,30 +69,24 @@ export async function POST(request: Request) {
 
     // Calculate base cost
     let costCents = 0
-    let effectiveDuration = duration
-    let effectiveResolution = resolution
+    let effectiveDuration: number | undefined = duration
+    let effectiveResolution: string | undefined = resolution
+    let videoCostRate: number | undefined
+    let videoInPremium = false
 
     if (studioModel.pricing_type === 'per_second') {
-      // Video model
-      const paramSchema = studioModel.parameter_schema || {}
-      const durationParam = paramSchema.duration
-      const resolutionParam = paramSchema.resolution
-
-      const durationOptions = durationParam?.options || studioModel.duration_options || [5]
-      const resolutionOptions = resolutionParam?.options || studioModel.resolution_options || ['720p']
-
-      effectiveDuration = duration ?? durationParam?.default ?? durationOptions[0]
-      effectiveResolution = resolution ?? resolutionParam?.default ?? resolutionOptions[0]
-
-      // Validate
-      if (!durationOptions.includes(effectiveDuration)) {
-        effectiveDuration = durationOptions[0]
-      }
-      if (!resolutionOptions.includes(effectiveResolution)) {
-        effectiveResolution = resolutionOptions[0]
-      }
-
-      costCents = calculateVideoCost(studioModel, effectiveDuration as number, effectiveResolution as string, generateAudio)
+      const resolved = resolveVideoCost({
+        model: studioModel,
+        duration,
+        resolution,
+        generateAudio,
+        hasReferenceVideos: detectHasReferenceVideos(params),
+      })
+      costCents = resolved.costCents
+      effectiveDuration = resolved.effectiveDuration
+      effectiveResolution = resolved.effectiveResolution
+      videoCostRate = resolved.rateCentsPerSecond
+      videoInPremium = resolved.videoInPremiumApplied
     } else {
       // Image model - flat rate
       costCents = studioModel.cost_per_run_cents || 0
@@ -156,6 +123,9 @@ export async function POST(request: Request) {
         ...(studioModel.pricing_type === 'per_second' && {
           duration: effectiveDuration,
           resolution: effectiveResolution,
+          rateCentsPerSecond: videoCostRate,
+          videoInPremium,
+          // Legacy fields for backwards compat with consumers:
           costPerSecond: studioModel.cost_per_second_cents,
           resolutionMultiplier: studioModel.resolution_multipliers?.[effectiveResolution as string] || 1.0,
         }),

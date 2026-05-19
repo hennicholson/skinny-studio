@@ -1528,25 +1528,30 @@ export const MODEL_SPECS: ModelSpec[] = [
       // Source: bytedance/seedance-2.0 pricing tab on Replicate, May 2026.
       // Variant detection: if reference_videos.length > 0 → video-in row.
       // intelligentDurationSeconds=8 → conservative budget for duration=-1.
+      //
+      // List prices are Tier B (~1.8x raw) — see
+      // supabase/migrations/20260519030700_seedance_2_pricing_tier_b.sql for
+      // the margin reasoning (covers Whop+Stripe fees + storage/bandwidth +
+      // healthy spread).
       intelligentDurationSeconds: 8,
       perResolution: {
         '480p': {
           replicateCostPerSecondCents: 8,
           replicateCostPerSecondCentsVideoIn: 10,
-          listCostPerSecondCents: 10,
-          listCostPerSecondCentsVideoIn: 13,
+          listCostPerSecondCents: 15,
+          listCostPerSecondCentsVideoIn: 18,
         },
         '720p': {
           replicateCostPerSecondCents: 18,
           replicateCostPerSecondCentsVideoIn: 22,
-          listCostPerSecondCents: 24,
-          listCostPerSecondCentsVideoIn: 29,
+          listCostPerSecondCents: 32,
+          listCostPerSecondCentsVideoIn: 40,
         },
         '1080p': {
           replicateCostPerSecondCents: 45,
           replicateCostPerSecondCentsVideoIn: 55,
-          listCostPerSecondCents: 60,
-          listCostPerSecondCentsVideoIn: 75,
+          listCostPerSecondCents: 80,
+          listCostPerSecondCentsVideoIn: 99,
         },
       },
     },
